@@ -11,6 +11,25 @@ applies them and announces here.
 ## Done
 
 - `m0` — scaffold + contracts + base interfaces + Makefile/pyproject (Lane A/B side)
+- `m2a`+`m2b` — brain loop green: `make demo` (keys) + meet_person, 17-test suite
+- `m1` — devicelink + headless sim e2e + live drivers + `make hub` entrypoint
+- M5a — record/replay (percept-level), latency_probe, README
+
+## Interfaces Lane C/D plug into (all live on `chud1`)
+
+- Your backends: implement `perception/*/base.py`; register in the existing
+  `create_*_backend()` factory branches (lazy imports already stubbed with your
+  module/class names: `local_yolo.LocalYoloSam`, `baseten_ws.BasetenSam`,
+  `local_insight.LocalInsightFace`, `baseten_http.BasetenFace`,
+  `local_whisper.LocalWhisper`, `stt/baseten_ws.BasetenStt`, `jev_typesafe.JevTypeSafe`).
+- STT: `SttDriver` (perception/drivers.py) feeds raw 40 ms device chunks into
+  `stream()`. Lane C's vad.py should wrap/gate that feed (pre-roll + hangover +
+  512-sample re-framing per AGENTS.md §6.3) — cleanest: do the re-framing inside
+  your backends' `stream()` so the driver stays untouched.
+- Face: `FaceDriver` sends the full frame today; add hub-side ≤640px downscale
+  when your cv2 path lands (TODO marked in drivers.py).
+- `memory/frames.py` (ring buffer) is unbuilt; `keyframe_ref` is always None and
+  every handler tolerates that — wire it in world/model.py `_end_track()`.
 
 ## Blocked
 

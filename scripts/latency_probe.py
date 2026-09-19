@@ -22,30 +22,29 @@ async def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         runner = ScenarioRunner(scenario, config, tmp)
 
-        stt_final_t: list[float] = []
         gate_t: list[float] = []
-        runner.bus.subscribe(
-            "percepts.stt",
-            lambda seg: _stamp(stt_final_t, runner) if seg.is_final else _noop(),
-        )
         runner.bus.subscribe("gate.result", lambda _r: _stamp(gate_t, runner))
 
         report = await runner.run()
         print(f"scenario: {report.name} ({'PASS' if report.passed else 'FAIL'})")
-        if stt_final_t and gate_t:
-            gates_after = [t for t in gate_t if t >= stt_final_t[0]]
-            if gates_after:
-                print(
-                    f"  question final -> gate decision : {(gates_after[0] - stt_final_t[0]) * 1000:6.1f} ms"
-                )
+        # Measure against the SCRIPTED question time — a probe subscriber would only
+        # run after the whole publish cascade and read ~0 ms.
+        question_t = max((e.t for e in scenario.stt_events), default=None)
         answers = [
             (t, a) for t, a in runner.actions if a.card and a.card.template.value == "answer"
         ]
-        if stt_final_t and answers:
-            print(
-                f"  question final -> answer card    : {(answers[0][0] - stt_final_t[0]) * 1000:6.1f} ms"
-            )
-        print(f"  display actions emitted          : {len(runner.actions)}")
+        if question_t is not None:
+            gates_after = [t for t in gate_t if t >= question_t]
+            if gates_after:
+                print(
+                    f"  question -> gate decision : {(gates_after[0] - question_t) * 1000:6.1f} ms"
+                )
+            answers_after = [t for t, _ in answers if t >= question_t]
+            if answers_after:
+                print(
+                    f"  question -> answer card   : {(answers_after[0] - question_t) * 1000:6.1f} ms"
+                )
+        print(f"  display actions emitted   : {len(runner.actions)}")
         print("  budget (AGENTS.md section 12): end of question -> answer card < 1500 ms")
 
 
