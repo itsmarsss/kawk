@@ -48,6 +48,9 @@ endpoints must be configured explicitly. Deployment instructions are under
 
 ## Repeatable component comparisons
 
+See [measured R&D results](RND_RESULTS.md) for the same-input local/cloud
+comparison, browser verification and startup/tracking limitations.
+
 The three perception adapters implement the same typed interfaces. Select them
 with `remember.toml` and `remember_hub.backends.create_sam/create_face/create_stt`.
 `create_jev` selects the typed decision service separately. These factories use

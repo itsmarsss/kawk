@@ -33,6 +33,18 @@ namespace IDs across restarted connections. Whisper word times are relative to
 - GitHub default `main`; active integration branch `chud3`.
 - Existing Whisper H100 deployment `wdlg2oe3/wldeyy7` is working; do not stop it.
 - Research: H100 warm speech delays are essentially unchanged from RTX.
+- Both local/cloud selectors now pass fixture browser checks for objects, faces
+  and speech. Matched Mac M5 Pro/H100 warm medians: faces 32.9/181.8 ms (n=20),
+  speech final after offset 1,835/552 ms (n=3), objects 44.9/842.1 ms (n=3).
+  Objects share one image and three concepts but compare YOLO-World with SAM;
+  speech compares Small/int8 with Large-v3. These are small latency samples,
+  not an accuracy study. Cloud face's 9.63-second outlier remains in evidence.
+- SAM 3.1 public deployment w7m74v6w/w55ov5p returned real typed boxes through
+  both the adapter and browser. It is explicitly windowed; IDs reset per update,
+  so it does not meet persistent incremental tracking. First native inference
+  took about 11.6 seconds and required a reconnect after the 10-second deadline.
+- Final integration checks: 129 Python tests, Ruff/Pyright clean, 20 UI lifecycle
+  assertions. No live TypeSafe measurements without its key.
 
 ## Blocked
 
