@@ -13,7 +13,9 @@ def create_face_backend(cfg: FaceCfg) -> FaceBackend:
         return MockFace()
     if cfg.backend == "local":
         try:
-            from .local_insight import LocalInsightFace  # Lane C
+            from .local_insight import (  # Lane C  # pyright: ignore[reportMissingImports]
+                LocalInsightFace,
+            )
         except ImportError as e:
             raise SystemExit(
                 f"face backend 'local' unavailable ({e}). Run: uv sync --extra local "
@@ -22,7 +24,7 @@ def create_face_backend(cfg: FaceCfg) -> FaceBackend:
         return LocalInsightFace(cfg)
     if cfg.backend == "baseten":
         try:
-            from .baseten_http import BasetenFace  # Lane D
+            from .baseten_http import BasetenFace  # Lane D  # pyright: ignore[reportMissingImports]
         except ImportError as e:
             raise SystemExit(
                 f"face backend 'baseten' unavailable ({e}). Ensure Lane D's baseten_http.py "

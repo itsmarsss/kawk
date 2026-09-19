@@ -77,8 +77,8 @@ class GatePolicy:
             by_key = {q.key: q for q in bank}
             results: list[GateResult] = []
 
-            addressed = (answers.get("addressed") or object).noul if "addressed" in answers else 0
-            addressed = addressed or 0.0
+            addressed_ans = answers.get("addressed")
+            addressed = addressed_ans.noul if addressed_ans and addressed_ans.noul else 0.0
 
             # Spoken intents fire only on a final utterance, gated by `addressed`.
             if reason == "stt_final" and addressed >= self.cfg.addressed_threshold:

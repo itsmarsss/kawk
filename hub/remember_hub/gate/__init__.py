@@ -13,7 +13,7 @@ def create_jev_backend(cfg: JevCfg) -> JevBackend:
         return JevMock()
     if cfg.backend == "typesafe":
         try:
-            from .jev_typesafe import JevTypeSafe  # Lane D
+            from .jev_typesafe import JevTypeSafe  # Lane D  # pyright: ignore[reportMissingImports]
         except ImportError as e:
             raise SystemExit(
                 f"jev backend 'typesafe' unavailable ({e}). Ensure Lane D's jev_typesafe.py "

@@ -7,3 +7,6 @@ data/
 .ruff_cache/
 dist/
 scenarios/assets/simfix/
+
+# session continuity notes stay local-only
+notes/

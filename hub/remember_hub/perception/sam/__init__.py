@@ -13,7 +13,7 @@ def create_sam_backend(cfg: SamCfg) -> SamBackend:
         return MockSam()
     if cfg.backend == "local":
         try:
-            from .local_yolo import LocalYoloSam  # Lane C
+            from .local_yolo import LocalYoloSam  # Lane C  # pyright: ignore[reportMissingImports]
         except ImportError as e:
             raise SystemExit(
                 f"sam backend 'local' unavailable ({e}). Run: uv sync --extra local "
@@ -22,7 +22,7 @@ def create_sam_backend(cfg: SamCfg) -> SamBackend:
         return LocalYoloSam(cfg)
     if cfg.backend == "baseten":
         try:
-            from .baseten_ws import BasetenSam  # Lane D
+            from .baseten_ws import BasetenSam  # Lane D  # pyright: ignore[reportMissingImports]
         except ImportError as e:
             raise SystemExit(
                 f"sam backend 'baseten' unavailable ({e}). Ensure Lane D's baseten_ws.py "

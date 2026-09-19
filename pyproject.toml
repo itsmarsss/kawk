@@ -52,4 +52,5 @@ ignore = ["E501"]
 [tool.pyright]
 include = ["hub"]
 typeCheckingMode = "basic"
+extraPaths = ["devices/sim"]
 pythonVersion = "3.12"

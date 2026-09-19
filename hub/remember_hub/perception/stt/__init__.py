@@ -13,7 +13,9 @@ def create_stt_backend(cfg: SttCfg) -> SttBackend:
         return MockStt()
     if cfg.backend == "local":
         try:
-            from .local_whisper import LocalWhisper  # Lane C
+            from .local_whisper import (
+                LocalWhisper,  # Lane C  # pyright: ignore[reportMissingImports]
+            )
         except ImportError as e:
             raise SystemExit(
                 f"stt backend 'local' unavailable ({e}). Run: uv sync --extra local "
@@ -22,7 +24,7 @@ def create_stt_backend(cfg: SttCfg) -> SttBackend:
         return LocalWhisper(cfg)
     if cfg.backend == "baseten":
         try:
-            from .baseten_ws import BasetenStt  # Lane D
+            from .baseten_ws import BasetenStt  # Lane D  # pyright: ignore[reportMissingImports]
         except ImportError as e:
             raise SystemExit(
                 f"stt backend 'baseten' unavailable ({e}). Ensure Lane D's baseten_ws.py "

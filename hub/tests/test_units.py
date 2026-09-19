@@ -88,7 +88,7 @@ async def test_jev_mock_keys_flow():
         ),
     ]
     answers = await jev.ask(state, bank)
-    assert answers["addressed"].noul >= 0.65
+    assert (answers["addressed"].noul or 0) >= 0.65
     assert answers["intent"].choice == Intent.FIND_OBJECT.value
     assert answers["find_target"].choice == "keys"
 
@@ -98,4 +98,4 @@ async def test_jev_mock_not_addressed_smalltalk():
     state = 'TRANSCRIPT_15S: [user] "yeah I keep losing stuff"'
     bank = [Question(key="addressed", kind="noul", instructions=".")]
     answers = await jev.ask(state, bank)
-    assert answers["addressed"].noul < 0.5
+    assert (answers["addressed"].noul or 1) < 0.5

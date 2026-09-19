@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import websockets
-from websockets.asyncio.server import ServerConnection, serve
+from websockets.asyncio.server import Server, ServerConnection, serve
 
 from ..bus import EventBus
 from ..config import DeviceLinkCfg
@@ -67,18 +67,19 @@ class DeviceLinkServer:
         self.cfg = cfg
         self.device_defaults = device_defaults
         self.devices: dict[str, DeviceSession] = {}
-        self._server: websockets.asyncio.server.Server | None = None
+        self._server: Server | None = None
         bus.subscribe("display.current", self.on_display)
 
     async def start(self, port: int | None = None) -> int:
-        self._server = await serve(
+        server = await serve(
             self._handle,
             self.cfg.host,
             self.cfg.port if port is None else port,
             compression=None,  # §5: disable permessage-deflate
             max_size=8 * 1024 * 1024,
         )
-        actual = self._server.sockets[0].getsockname()[1]
+        self._server = server
+        actual = server.sockets[0].getsockname()[1]
         log.info("devicelink listening on %s:%s", self.cfg.host, actual)
         return actual
 
