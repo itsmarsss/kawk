@@ -36,8 +36,20 @@ disable camera or microphone independently, and choose backends (defaults: local
 1. **Start** → one `getUserMedia` per enabled device (camera and mic separately, so one failure
    does not block the other) → `capture.status live/off` to the session → faces/objects streams
    open on the camera, speech on the mic. The component strip shows Session, Camera, Microphone,
-   Faces, Objects, Speech, and the clip buffer counters honestly, per component. A model or
-   socket failure names the component and leaves the others usable.
+   Faces, Objects, Speech, and the clip buffer counters. A model or socket failure names the
+   component and leaves the others usable.
+
+   While the faces stream runs, every fresh reply
+   is drawn over the preview as a box per face with the server's `stable_name`, or *Unknown*;
+   the raw match candidate is never shown as an identity. Boxes are mapped through the
+   preview's `object-fit: cover` (and mirroring, if any), redrawn on resize, and cleared on empty
+   detections, on face-stream failure, Stop, camera off, reset and disconnect. Freshness is
+   measured from the frame's capture time: a reply already older than 1.5 s is ignored, a fresh
+   one is kept only for its remaining lifetime, and an older observation never replaces a newer
+   one. Name tags are clamped inside the preview (above, below, or pinned inside a face that
+   fills the frame), long names are shortened with an ellipsis, and fully off-screen boxes are
+   skipped. The overlay is a separate canvas: nothing is drawn into the JPEGs sent
+   for inference or clips, and it is independent of the LCD.
 2. **Known person.** The faces stream returns `stable_id` (the real gallery UUID) once the
    server's identity vote settles; the V1 engine emits `encounter.started` for that profile,
    and a `display.updated` profile card. A due reminder is drawn **above** the profile text on the
@@ -117,6 +129,7 @@ static/remember/
   live/perception.js                    faces/objects/speech socket clients (existing protocols, stream ids)
   live/v1_provider.js                   /api/v1 session + /ws/v1 control, media ring, forwarding, control
   live/lcd.js                           240×240 renderer: layoutCard() (pure) + createDeviceDisplay()
+  live/overlay.js                       face boxes + stable name over the camera preview (mapBox, createFaceOverlay)
   providers/demo_provider.js            scripted demo (separate mode)
   providers/live_adapter.js             older generic example adapter (not used by Live V1)
   ui/views/live_now.js                  live Now page; createStage() persistent nodes

@@ -41,8 +41,8 @@ const modeEl = document.getElementById('mode-switch');
 const liveCtx = { stage: null, capture: null, lcd: null, status: null, notices: [], devices: null, apiStatus: null, settings: null, busy: false, liveMod: null };
 
 async function setupLive() {
-  const [capMod, percMod, lcdMod, v1Mod] = await Promise.all([
-    import('./live/capture.js'), import('./live/perception.js'), import('./live/lcd.js'), import('./live/v1_provider.js'),
+  const [capMod, percMod, lcdMod, v1Mod, overlayMod] = await Promise.all([
+    import('./live/capture.js'), import('./live/perception.js'), import('./live/lcd.js'), import('./live/v1_provider.js'), import('./live/overlay.js'),
   ]);
   liveCtx.stage = createStage();
   stageSlot.append(liveCtx.stage.root);
@@ -51,6 +51,13 @@ async function setupLive() {
     resolveClip: (clipId) => { const m = store.getState().moments[clipId]; return m?.status === 'saved' && m.clip?.url ? { url: m.clip.url, poster_url: m.clip.poster_url } : null; },
   });
   liveCtx.lcd.onChange((text) => { liveCtx.stage.lcdText.textContent = text; });
+  // Face overlay over the preview: same element the user watches; nothing is drawn into inference or clip images.
+  const view = liveCtx.stage.video;
+  liveCtx.overlay = overlayMod.createFaceOverlay(liveCtx.stage.overlay, {
+    measure: () => ({ w: view.clientWidth, h: view.clientHeight }),
+    isMirrored: () => { const m = getComputedStyle(view).transform; return typeof m === 'string' && m.startsWith('matrix(') && Number(m.slice(7).split(',')[0]) < 0; },
+    observeResize: (fn) => { if (!('ResizeObserver' in globalThis)) return null; const ro = new ResizeObserver(fn); ro.observe(view); return () => ro.disconnect(); },
+  });
   liveCtx.liveMod = { capture: liveCtx.capture, streams: { faces: percMod.createFacesStream, objects: percMod.createObjectsStream, speech: percMod.createSpeechStream }, createV1Provider: v1Mod.createV1Provider };
   liveCtx.settings = loadLiveSettings();
   refreshDevices();
@@ -97,6 +104,7 @@ async function attachProvider() {
       lastDisplayId = null;
     });
     provider.onLiveStatus((s) => { liveCtx.status = s; syncCamera(); render(); });
+    provider.onFaceFrame((obs) => { if (obs) liveCtx.overlay?.show(obs.frame, obs.meta); else liveCtx.overlay?.clear(); }); // no page re-render per reply
     provider.onNotice((n) => { liveCtx.notices = [...liveCtx.notices, n].slice(-6); if (n.level === 'error') toast(n.message); render(); });
     try { await provider.start(); } catch (err) { liveCtx.notices.push({ level: 'error', message: err.message }); }
     liveCtx.status = provider.getLiveStatus();
@@ -107,6 +115,7 @@ function syncCamera() {
   const cap = liveCtx.status?.capture;
   const st = cap?.camera ?? 'off';
   liveCtx.stage?.setCamera(st, st === 'live' ? 'live' : st === 'error' ? 'failed' : 'off');
+  if (st !== 'live') liveCtx.overlay?.clear();
 }
 
 const dispatch = (type, payload) => provider.dispatch({ type, payload }).catch((err) => { console.error(err); toast(`Could not do that: ${err.message}`); throw err; });
@@ -152,6 +161,7 @@ const actions = {
       if (!(await confirmDialog('Reset the live session? Capture stops and this temporary session (its notes, reminders, encounters and clips) is deleted on the server. Enrolled faces in the gallery are NOT deleted.', 'Reset session'))) return;
       await provider.destroySession();
       liveCtx.lcd?.clear();
+      liveCtx.overlay?.clear();
       store.reset();
       liveCtx.notices = [];
       await attachProvider();

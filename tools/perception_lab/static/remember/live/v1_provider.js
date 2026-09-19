@@ -51,6 +51,7 @@ export function createV1Provider({ getState, capture, streams, deps = {} }) {
   const notices = createEmitter();
   const statusListeners = createEmitter();
   const snapshots = createEmitter();   // authoritative snapshot delivered with each hello ack (reconnects drop queued envelopes)
+  const faceFrames = createEmitter();  // raw /ws/faces frames for the preview overlay (null = clear); generation-guarded
 
   let sessionId = storage?.getItem(SESSION_KEY) || null;
   let limits = { jpeg_max_bytes: 256 * 1024, clip_fps: 5, audio_sample_rate: 16000 };
@@ -283,8 +284,12 @@ export function createV1Provider({ getState, capture, streams, deps = {} }) {
       scheduleFrame(0);
       if (next.faces?.enabled) startStream('faces', gen, (self) => streams.faces({
         backend: next.faces.backend, capture,
-        onFrame: (frame, meta) => { if (!stale()) sendJson({ type: 'perception.faces', stream_id: meta.streamId, capture_ts_ms: meta.captureTsMs % 2 ** 32, data: frame }); },
-        onStatus: (st) => onStreamStatus('faces', st, gen, self),
+        onFrame: (frame, meta) => {
+          if (stale()) return;
+          sendJson({ type: 'perception.faces', stream_id: meta.streamId, capture_ts_ms: meta.captureTsMs % 2 ** 32, data: frame });
+          faceFrames.emit({ frame, meta }); // overlay only (frame + capture timing); the JPEG already sent is untouched
+        },
+        onStatus: (st) => { onStreamStatus('faces', st, gen, self); if (gen === captureGen && (st.phase === 'stopped' || st.phase === 'error')) faceFrames.emit(null); },
         onEnrollmentStatus: (data) => { if (!stale()) sendJson({ type: 'enrollment.status', stream_id: active.faces?.streamId ?? null, data }); },
       }));
       if (next.objects?.enabled) startStream('objects', gen, (self) => streams.objects({
@@ -382,6 +387,7 @@ export function createV1Provider({ getState, capture, streams, deps = {} }) {
     captureGen += 1;
     capturing = false;
     starting = false;
+    faceFrames.emit(null);           // no capture → no boxes
     clock.clearTimeout(frameTimer);
     if (frameInFlight) { clock.clearTimeout(frameInFlight.timer); frameInFlight = null; }
     unsubChunk?.(); unsubChunk = null;
@@ -414,6 +420,8 @@ export function createV1Provider({ getState, capture, streams, deps = {} }) {
     onLiveStatus: statusListeners.subscribe,
     /** Fires with the server's current Snapshot on every hello ack; the app re-hydrates from it. */
     onSnapshot: snapshots.subscribe,
+    /** `{frame, meta}` from the current faces stream for the preview overlay (meta.captureTsMs dates it); `null` means clear. */
+    onFaceFrame: faceFrames.subscribe,
     getLiveStatus: snapshotLive,
     async getSnapshot() { return ensureSession(); },
     /** Open the control connection (CRUD/recall work without capture). */

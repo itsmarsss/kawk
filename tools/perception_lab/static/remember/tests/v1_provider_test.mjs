@@ -526,4 +526,40 @@ export async function run() {
     await r2.provider.destroySession();
     eq(r2.provider.getLiveStatus().decision, null, 'reset clears decision status');
   }
+
+  console.log('\n# v1 provider: face frames for the overlay follow the capture generation');
+  {
+    const tickAll = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+    const r = rig();
+    const w = await connected(r);
+    const seen = []; r.provider.onFaceFrame((f) => seen.push(f));
+    const p = r.provider.startCapture(SETTINGS);
+    await tickAll();
+    const ack = w.json().filter((m) => m.type === 'command' && m.command.type === 'capture.status').at(-1);
+    w.message({ type: 'v1.ack', request_id: ack.request_id, receipt: { ok: true } });
+    await p;
+    const faces = r.made.faces[0]; faces.running();
+    const frame = { type: 'frame', frame_id: 1, input_wh: [640, 480], faces: [{ track_id: 1, box: [1, 2, 3, 4], stable_name: null, match: { name: 'x' } }], detected_count: 1 };
+    faces.opts.onFrame(frame, { streamId: faces.streamId, captureTsMs: 5 });
+    eq(seen.length, 1, 'frame delivered to the overlay channel');
+    check(seen[0].frame === frame, 'the same raw frame object (no reinterpretation)');
+    eq(seen[0].meta.captureTsMs, 5, 'capture timing forwarded with the frame');
+    r.provider.stopCapture();
+    eq(seen.at(-1), null, 'stop clears the overlay');
+    const before = seen.length;
+    faces.opts.onFrame(frame, { streamId: faces.streamId, captureTsMs: 6 });
+    eq(seen.length, before, 'a late frame from the stopped generation is not delivered');
+    const p2 = r.provider.startCapture(SETTINGS);
+    await tickAll();
+    const ack2 = w.json().filter((m) => m.type === 'command' && m.command.type === 'capture.status').at(-1);
+    w.message({ type: 'v1.ack', request_id: ack2.request_id, receipt: { ok: true } });
+    await p2;
+    const faces2 = r.made.faces[1]; faces2.running();
+    faces.opts.onFrame(frame, { streamId: faces.streamId, captureTsMs: 7 });
+    eq(seen.length, before, 'old stream frames still ignored after a new start');
+    faces2.opts.onFrame(frame, { streamId: faces2.streamId, captureTsMs: 8 });
+    eq(seen.length, before + 1, 'new stream frames delivered');
+    faces2.opts.onStatus({ phase: 'error', message: 'model died' });
+    eq(seen.at(-1), null, 'face stream failure clears the overlay');
+  }
 }

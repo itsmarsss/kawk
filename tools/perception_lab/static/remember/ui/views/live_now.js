@@ -11,11 +11,12 @@ export function createStage() {
   video.muted = true;
   const canvas = h('canvas', { width: 240, height: 240, role: 'img', 'aria-label': 'Device display: idle' });
   const lcdText = h('p.sr-only', { 'aria-live': 'polite', id: 'lcd-text' });
+  const overlay = h('canvas.cam-overlay', { 'aria-hidden': 'true' }); // face boxes + stable names, drawn over the same video
   const camCaption = h('figcaption', h('span', 'Camera'), h('span.live-tag', { id: 'cam-state' }, 'off'));
   const root = h('section.stage-grid', { 'aria-label': 'Camera and device display' },
-    h('figure.scene.cam', h('div.scene-view.cam-view', video, h('div.cam-idle', { id: 'cam-idle' }, h('div.idle-mark', { 'aria-hidden': 'true' }), h('p.small.muted', 'Camera off. Press Start to begin capture (your browser will ask for permission).'))), camCaption),
+    h('figure.scene.cam', h('div.scene-view.cam-view', video, overlay, h('div.cam-idle', { id: 'cam-idle' }, h('div.idle-mark', { 'aria-hidden': 'true' }), h('p.small.muted', 'Camera off. Press Start to begin capture (your browser will ask for permission).'))), camCaption),
     h('figure.device', h('div.device-frame', canvas), lcdText, h('figcaption', h('span', 'Device display · 240 × 240 logical'), h('span.tiny.muted', 'rendered from the server’s display action'))));
-  return { root, video, canvas, lcdText, setCamera(state, label) { root.querySelector('#cam-state').textContent = label; root.querySelector('#cam-idle').hidden = state === 'live'; video.hidden = state !== 'live'; } };
+  return { root, video, canvas, overlay, lcdText, setCamera(state, label) { root.querySelector('#cam-state').textContent = label; root.querySelector('#cam-idle').hidden = state === 'live'; video.hidden = state !== 'live'; overlay.hidden = state !== 'live'; } };
 }
 
 const PHASE_LABEL = { idle: 'off', connecting: 'connecting…', ready: 'ready', running: 'running', stopped: 'stopped', error: 'error' };
