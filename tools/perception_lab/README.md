@@ -1,28 +1,29 @@
 # Perception testing lab
 
-Standalone browser test tools for face recognition and live Whisper. This is a
-component lab, not the full Remember hub, world model, SAM or Jev pipeline.
+Standalone browser tests for objects, face recognition and live Whisper. This is
+a component lab, separate from the full Remember world model and task pipeline.
 Frontend implementation is delegated to Claude Code Fable 5.1. Work stays on
 `chud3`; GitHub's default is `main`.
 
 ## Run
 
-Use Python 3.11 or 3.12 in an isolated environment. Install `requirements.txt`
-with `uv pip install --python <python> -r tools/perception_lab/requirements.txt`.
-Set `REMEMBER_FACE_MODEL_ROOT` to the directory containing
+Use the repository's Python 3.12 environment:
+
+```sh
+uv sync --extra local --extra sim --extra lab --extra cloud
+make fetch-local-models
+make serve-ui
+```
+
+Optionally set `REMEMBER_FACE_MODEL_ROOT` (default `data`) to the directory containing
 `models/buffalo_l/det_10g.onnx` and `models/buffalo_l/w600k_r50.onnx`. Models are not
 downloaded automatically. Set `BASETEN_API_KEY` on the server or use the existing
 Mac Baseten CLI profile `h100-permanent`; the reserve account is never selected.
 
-From the repository root:
-
-```sh
-python -m tools.perception_lab.server
-```
-
 Open http://127.0.0.1:8081/. The server listens on `0.0.0.0:8081`.
 `PORT`, `REMEMBER_GALLERY_PATH`, `REMEMBER_FACE_PROVIDER`, and
-`BASETEN_STT_MODEL_ID` can override defaults. The default face provider is CoreML
+`BASETEN_STT_MODEL_ID`, `BASETEN_FACE_MODEL_ID`, `BASETEN_SAM_MODEL_ID` and
+`REMEMBER_MODEL_DIR` can override defaults. The default face provider is CoreML
 (with supported ONNX graph partitions on CPU), not a remote GPU. CPU fallback
 must be selected explicitly using `CPUExecutionProvider`.
 
@@ -40,26 +41,42 @@ Continuity cameras appear in the browser device selector after granting access.
   consistent single-face frames, averages normalized buffalo_l embeddings, then
   renormalizes. Matching uses cosine >=0.40, with three consistent observations
   before changing the displayed identity. Tune accuracy in actual lighting.
+- The Baseten face selector uses the same embedding model/gallery. A cloud HTTP
+  frame times out after four seconds and is skipped; three consecutive timeouts
+  end the session. Skips are shown in the UI. If the Mac fails to reply within
+  five seconds, the browser closes the socket to avoid mixing old/new replies.
+- Objects: local YOLO-World or configured SAM 3.1. The experimental cloud window
+  mode requires `REMEMBER_SAM_ALLOW_WINDOWED=1`; it reinitializes from received
+  frames, resets native track IDs and is labeled accordingly. It does not provide
+  persistent incremental SAM tracking. Each camera sends one frame at a time.
 - Only the enrolled name and embedding are persisted in ignored
   `data/gallery.npz`; no camera frames are saved. Embeddings stay on the server.
-- Speech: persistent browser → Mac → Baseten WebSocket. The existing production
+- Cloud speech: persistent browser → Mac → Baseten WebSocket. The existing production
   model is `wdlg2oe3` (H100 deployment `wldeyy7`, verified 2026-09-19). Exact
   512-sample chunks at 16 kHz mono PCM16LE. Metadata enables partials, word
   timestamps and the service's own VAD. No local Silero gate in this component
   latency tool: audio streams continuously while Start is active. This is a
   deliberate difference from the product's VAD-gated path.
+- Local speech uses faster-whisper Small/int8 CPU with the real Silero ONNX gate.
+  The models preload before the microphone starts. Local overload raises an
+  error instead of building an unbounded audio queue or silently dropping words.
 - Each browser session gets its own upstream Whisper socket; Stop/closed tab
   releases that socket. Sessions stop after ten minutes. No deployment changes
   are made and the teammate's deployment is never deactivated.
 - Connection setup, face inference, face frame roundtrip, and any estimated
   acoustic-boundary speech delays are separate metrics. Browser RMS estimates
   are noise-sensitive; they are not isolated GPU time or an accuracy benchmark.
-- Microphone audio is forwarded to Baseten; this server does not save it or
+- Microphone audio is forwarded to Baseten only when cloud speech is selected;
+  local speech stays on the Mac. This server does not save it or
   persist transcripts. Use consenting participants for face enrollment.
 
 ## API used by the UI
 
 `GET /api/status`, `GET /api/gallery`, `DELETE /api/gallery/{id}`.
+Each perception socket accepts `?backend=local|baseten`; Objects also takes
+comma-separated `vocabulary`. Status reports assets/configuration, not a guarantee
+that cloud replicas are active. Scale-to-zero can make the first Start time out;
+wait for startup and retry. See `UI.md` for complete browser contracts.
 `/ws/faces` accepts binary JPEGs and JSON `enroll`/`cancel_enrollment` controls;
 responds with `ready`, `frame` (boxes/matches/timings/enrollment), `busy`, `error`.
 `/ws/speech` responds with `connecting`, `ready`, then `transcript` messages.

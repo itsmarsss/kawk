@@ -9,10 +9,11 @@
 <body>
 <main>
   <h1>Remember lab</h1>
-  <p class="muted">Test pages for the face and speech components running on this Mac.</p>
+  <p class="muted">Camera and microphone tests with local and cloud backends.</p>
 
   <ul class="plain">
     <li><a href="/faces">Faces</a><span class="muted">Camera, face detection, enrollment, recognition timing.</span></li>
+    <li><a href="/objects">Objects</a><span class="muted">Camera, object boxes and track IDs for a small vocabulary.</span></li>
     <li><a href="/speech">Speech</a><span class="muted">Microphone, live Whisper transcript, delay you can feel.</span></li>
     <li><a href="/devices">Devices</a><span class="muted">Cameras, microphones, and using a phone on the same Wi-Fi.</span></li>
   </ul>
@@ -23,6 +24,7 @@
     <dt>Face model</dt><dd id="face"></dd>
     <dt>Speech model</dt><dd id="speech"></dd>
     <dt>Enrolled people</dt><dd id="gallery"></dd>
+    <dt>Backends configured</dt><dd id="backends"></dd>
   </dl>
   <p id="error" class="error" role="alert"></p>
 
@@ -49,8 +51,11 @@
       ? `Whisper ${s.speech.model_id} configured, ${s.speech.sample_rate} Hz, up to ${Math.round(s.speech.max_session_s / 60)} min per session`
       : `Whisper ${s.speech.model_id} is not configured on the server`;
     document.getElementById('gallery').textContent = String(s.gallery_count);
-    const ok = s.face.ready && s.speech.configured;
-    setStatus(status, ok ? 'Server reachable, all components ready.' : 'Server reachable, some components are not ready.', ok ? 'ok' : 'warn');
+    const b = s.backends;
+    document.getElementById('backends').textContent = b
+      ? ['face', 'objects', 'speech'].map((k) => `${k}: local ${b[k]?.local?.configured ? 'yes' : 'no'}, baseten ${b[k]?.baseten?.configured ? 'yes' : 'no'}`).join(' · ') + ' (configured means settings exist, not that the model is loaded)'
+      : 'not reported by server';
+    setStatus(status, 'Server reachable.', 'ok');
   } catch (e) {
     setStatus(status, 'Server not reachable.', 'err');
     setError(error, e.message);

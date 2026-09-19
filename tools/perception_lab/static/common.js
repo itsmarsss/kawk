@@ -14,10 +14,72 @@ export function fetchStatus() {
   return fetchJson('/api/status');
 }
 
-// ws:// on http pages, wss:// on https pages, same host and port.
-export function wsUrl(path) {
+// ws:// on http pages, wss:// on https pages, same host and port. params -> query string.
+export function wsUrl(path, params) {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${location.host}${path}`;
+  const query = params ? new URLSearchParams(params).toString() : '';
+  return `${scheme}//${location.host}${path}${query ? '?' + query : ''}`;
+}
+
+// Plain names for each backend choice. The <select> shows these; nothing else is implied.
+export const BACKEND_LABELS = {
+  face: { local: 'Face local buffalo_l CoreML', baseten: 'Face Baseten buffalo_l' },
+  objects: { local: 'Objects local YOLO-World', baseten: 'Objects Baseten SAM 3.1' },
+  speech: { local: 'Speech local Whisper Small int8', baseten: 'Speech Baseten Whisper Large v3' },
+};
+
+// Backend selector bound to /api/status.backends[kind]. "configured" means the server found the
+// assets or endpoint configuration for that choice; it does not mean the model is loaded, warm,
+// or verified. When the server does not report backends at all, Start stays allowed.
+export function setupBackendSelector({ select, detail, recheck, kind, defaultBackend, onChange }) {
+  const labels = BACKEND_LABELS[kind];
+  const state = { value: defaultBackend, configured: true, detail: '', reported: false };
+  select.replaceChildren(...['local', 'baseten'].map((key) => new Option(labels[key], key)));
+  select.value = defaultBackend;
+
+  function apply(backends) {
+    state.value = select.value;
+    const info = backends?.[kind]?.[state.value];
+    state.reported = Boolean(backends && backends[kind]);
+    if (!state.reported) {
+      state.configured = true;
+      state.detail = 'Server did not report backend configuration for this component.';
+    } else {
+      state.configured = Boolean(info?.configured);
+      state.detail = info?.detail || (state.configured ? 'Configured.' : 'Not configured.');
+    }
+    for (const option of select.options) {
+      const item = backends?.[kind]?.[option.value];
+      option.textContent = labels[option.value] + (item && !item.configured ? ' (not configured)' : '');
+    }
+    detail.textContent = state.configured
+      ? `${labels[state.value]}: ${state.detail} Configured means assets or endpoint settings exist, not that the model is loaded or warm.`
+      : `${labels[state.value]} is not available: ${state.detail} Start is disabled for this choice.`;
+    detail.className = state.configured ? 'small muted' : 'small error-text';
+  }
+
+  async function refresh() {
+    detail.textContent = 'Checking server status…';
+    try {
+      const status = await fetchStatus();
+      apply(status.backends);
+      return status;
+    } catch (e) {
+      state.configured = false;
+      state.detail = e.message;
+      detail.textContent = `Could not read server status: ${e.message}`;
+      detail.className = 'small error-text';
+      return null;
+    }
+  }
+
+  select.addEventListener('change', async () => {
+    if (onChange) onChange(select.value);
+    await refresh();
+    if (onChange) onChange(select.value, 'refreshed');
+  });
+  recheck.addEventListener('click', async () => { await refresh(); if (onChange) onChange(select.value, 'refreshed'); });
+  return { refresh, get value() { return select.value; }, get configured() { return state.configured; }, get label() { return labels[select.value]; } };
 }
 
 export function fmtMs(value) {

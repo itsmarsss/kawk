@@ -72,3 +72,71 @@ def test_whisper_revision_keeps_same_id():
     assert partial["segment_id"] == final["segment_id"] == "8"
     assert final["is_final"] and final["text"] == "Where are my keys?"
     assert final["words"] == [{"word": "Where"}]
+
+
+async def test_local_speech_socket_failure_closes_generator_before_restart(monkeypatch):
+    import asyncio
+
+    from remember_hub.contracts.percepts import TranscriptSegment
+
+    from . import experiments
+
+    class Backend:
+        active = False
+        load_ms = 1
+        last_timings_ms = {}
+
+        async def load(self):
+            assert not self.active
+
+        async def stream(self, chunks):
+            assert not self.active
+            self.active = True
+            try:
+                yield TranscriptSegment(seg_id="fixture", text="keys", is_final=False)
+                await asyncio.Future()
+            finally:
+                self.active = False
+
+    class Socket:
+        closed = False
+
+        async def receive(self):
+            await asyncio.Future()
+
+        async def send_json(self, event):
+            if event["type"] == "transcript":
+                raise RuntimeError("Disconnected while receiving text")
+
+        async def close(self):
+            self.closed = True
+
+    backend = Backend()
+    monkeypatch.setattr(experiments, "_local_speech", backend)
+    monkeypatch.setattr(experiments, "speech_local_lock", asyncio.Lock())
+    for _ in range(2):
+        socket = Socket()
+        await experiments.local_speech_socket(socket)
+        assert socket.closed and not backend.active
+        assert not experiments.speech_local_lock.locked()
+
+
+async def test_invalid_object_vocabulary_does_not_load_a_model():
+    from .experiments import objects_socket
+
+    class Socket:
+        query_params = {"backend": "local", "vocabulary": ",".join(f"item{i}" for i in range(21))}
+        events = []
+        closed = False
+
+        async def send_json(self, event):
+            self.events.append(event)
+
+        async def close(self):
+            self.closed = True
+
+    socket = Socket()
+    await objects_socket(socket)
+    assert socket.closed
+    assert socket.events[0]["type"] == "error"
+    assert "1–20" in socket.events[0]["message"]

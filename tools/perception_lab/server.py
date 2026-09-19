@@ -21,14 +21,17 @@ import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from remember_hub.perception.face.baseten_http import FaceRequestTimeout
 
 from .faces import FaceEngine, FaceSession, Gallery, MODEL
 from .speech import METADATA, MODEL_ID, read_key, transcript_event
+from .backends import cloud_face_backend, configured_backends, jpeg_dimensions, selection
+from .experiments import local_speech_socket, objects_socket
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
 STATIC.mkdir(exist_ok=True)
-MODEL_ROOT = Path(os.getenv("REMEMBER_FACE_MODEL_ROOT", str(HERE / "data")))
+MODEL_ROOT = Path(os.getenv("REMEMBER_FACE_MODEL_ROOT", "data"))
 PROVIDER = os.getenv("REMEMBER_FACE_PROVIDER", "CoreMLExecutionProvider")
 GALLERY_PATH = Path(os.getenv("REMEMBER_GALLERY_PATH", str(HERE / "data" / "gallery.npz")))
 MAX_SESSION_S = 600
@@ -49,6 +52,7 @@ gallery = Gallery(GALLERY_PATH)
 engine = None
 engine_error = None
 engine_lock = asyncio.Lock()
+cloud_face_lock = asyncio.Lock()
 
 
 def same_origin(headers):
@@ -66,7 +70,7 @@ async def origin_guard(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     script_hashes = []
-    if request.url.path in ("/", "/faces", "/speech", "/devices"):
+    if request.url.path in ("/", "/faces", "/speech", "/devices", "/objects"):
         filename = "index.html" if request.url.path == "/" else request.url.path[1:] + ".html"
         path = STATIC / filename
         if path.exists():
@@ -110,6 +114,7 @@ async def status():
                      "load_ms": engine.load_ms if engine else None, "error": engine_error},
             "speech": {"model_id": MODEL_ID, "configured": configured, "sample_rate": 16000,
                        "chunk_samples": 512, "max_session_s": MAX_SESSION_S},
+            "backends": configured_backends(engine is not None, engine_error),
             "gallery_count": len(gallery.entries), "https_port": 8443,
             "https_available": bool(os.getenv("REMEMBER_HTTPS_ENABLED")),
             "lan_addresses": lan_addresses(), "ui_ready": (STATIC / "index.html").exists()}
@@ -132,11 +137,22 @@ async def ensure_engine():
     async with engine_lock:
         if engine is None:
             try:
-                engine = await asyncio.to_thread(FaceEngine, MODEL_ROOT, PROVIDER)
+                engine = await native_call(FaceEngine, MODEL_ROOT, PROVIDER)
                 engine_error = None
             except Exception as error:
                 engine_error = str(error)
                 raise
+
+
+async def native_call(function, *args):
+    """Keep the lock until uncancellable native work has really finished."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await task
+        raise
 
 
 async def ws_error(ws, message):
@@ -151,13 +167,26 @@ async def faces_socket(ws: WebSocket):
         return
     await ws.accept()
     session = FaceSession(gallery)
+    cloud_backend = None
     try:
-        await ensure_engine()
-        await ws.send_json({"type": "ready", "model": MODEL, "provider": PROVIDER,
-                            "load_ms": engine.load_ms, "max_fps": 5, "max_side": 640})
+        name = selection(ws.query_params.get("backend"), "local")
+        if name == "local":
+            await ensure_engine()
+        else:
+            cloud_backend = cloud_face_backend()
+        lock = engine_lock if name == "local" else cloud_face_lock
+        await ws.send_json({"type": "ready", "model": MODEL, "backend": name,
+                            "provider": PROVIDER if name == "local" else "Baseten",
+                            "load_ms": engine.load_ms if name == "local" else None,
+                            "max_fps": 5, "max_side": 640})
         last_frame = 0
         frame_id = 0
+        skipped_frames = 0
+        consecutive_timeouts = 0
+        session_started = time.perf_counter()
         while True:
+            if time.perf_counter() - session_started > MAX_SESSION_S:
+                raise RuntimeError("Ten-minute face test finished. Start again to continue.")
             message = await asyncio.wait_for(ws.receive(), timeout=60)
             if message["type"] == "websocket.disconnect":
                 break
@@ -181,14 +210,39 @@ async def faces_socket(ws: WebSocket):
             if not jpeg or len(jpeg) > 500_000:
                 await ws_error(ws, "Send one JPEG of at most 500 KB")
                 continue
-            if engine_lock.locked() or time.perf_counter() - last_frame < 0.19:
+            if lock.locked() or time.perf_counter() - last_frame < 0.19:
                 await ws.send_json({"type": "busy"})
                 continue
             started = time.perf_counter()
             last_frame = started
-            async with engine_lock:
+            async with lock:
                 try:
-                    result = await asyncio.to_thread(engine.infer, jpeg)
+                    if name == "local":
+                        result = await native_call(engine.infer, jpeg)
+                    else:
+                        import numpy as np
+                        wh = await asyncio.to_thread(jpeg_dimensions, jpeg, 640)
+                        observations = await cloud_backend.embed_faces(jpeg, wh)
+                        cloud_timings = dict(getattr(cloud_backend, "last_timings_ms", {}))
+                        cloud_timings.update(inference=cloud_timings.get("pipeline_total"),
+                                             decode=cloud_timings.get("jpeg_decode"),
+                                             detection=cloud_timings.get("detect_including_pre_post"))
+                        if "embedding_total" in cloud_timings and "align_total" in cloud_timings:
+                            cloud_timings["embedding_and_alignment"] = cloud_timings["embedding_total"] + cloud_timings["align_total"]
+                        result = {"faces": [{"box": list(row.box), "detection_score": row.det_score,
+                                              "embedding": np.asarray(row.embedding_512, dtype=np.float32)}
+                                             for row in observations],
+                                  "detected_count": getattr(cloud_backend, "last_detected_count", len(observations)), "input_wh": wh,
+                                  "timings_ms": cloud_timings}
+                    consecutive_timeouts = 0
+                except FaceRequestTimeout:
+                    consecutive_timeouts += 1
+                    skipped_frames += 1
+                    if consecutive_timeouts >= 3:
+                        await ws_error(ws, "Cloud face timed out three times. It may be waking from zero; wait and Start again, or choose local.")
+                        break
+                    await ws.send_json({"type": "busy", "reason": "cloud_timeout", "skipped_frames": skipped_frames})
+                    continue
                 except ValueError as error:
                     await ws_error(ws, str(error))
                     continue
@@ -201,10 +255,13 @@ async def faces_socket(ws: WebSocket):
     except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     except Exception as error:
-        await ws_error(ws, engine_error or f"Camera test failed ({type(error).__name__}); check the server log")
+        await ws_error(ws, engine_error if cloud_backend is None and engine_error else f"Camera test failed ({type(error).__name__}); check the server log")
         import traceback
         traceback.print_exc()
     finally:
+        if cloud_backend is not None and hasattr(cloud_backend, "aclose"):
+            with contextlib.suppress(Exception):
+                await cloud_backend.aclose()
         with contextlib.suppress(Exception):
             await ws.close()
 
@@ -215,6 +272,15 @@ async def speech_socket(ws: WebSocket):
         await ws.close(code=1008)
         return
     await ws.accept()
+    try:
+        name = selection(ws.query_params.get("backend"), "baseten")
+    except ValueError as error:
+        await ws_error(ws, str(error))
+        await ws.close()
+        return
+    if name == "local":
+        await local_speech_socket(ws)
+        return
     tasks = []
     try:
         await ws.send_json({"type": "connecting"})
@@ -225,7 +291,8 @@ async def speech_socket(ws: WebSocket):
                                       open_timeout=120, close_timeout=3, compression=None,
                                       max_size=2_000_000, max_queue=4) as upstream:
             await upstream.send(json.dumps(METADATA))
-            await ws.send_json({"type": "ready", "connect_ms": (time.perf_counter() - started) * 1000,
+            await ws.send_json({"type": "ready", "backend": "baseten", "model": "Whisper Large v3 streaming",
+                                "connect_ms": (time.perf_counter() - started) * 1000,
                                 "sample_rate": 16000, "chunk_samples": 512,
                                 "model_id": MODEL_ID, "max_session_s": MAX_SESSION_S})
             connected = time.perf_counter()
@@ -285,10 +352,20 @@ async def speech_socket(ws: WebSocket):
             await ws.close()
 
 
+@app.websocket("/ws/objects")
+async def object_socket(ws: WebSocket):
+    if not same_origin(ws.headers):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    await objects_socket(ws)
+
+
 @app.get("/")
 @app.get("/faces")
 @app.get("/speech")
 @app.get("/devices")
+@app.get("/objects")
 async def page(request: Request):
     filename = "index.html" if request.url.path == "/" else request.url.path[1:] + ".html"
     path = STATIC / filename

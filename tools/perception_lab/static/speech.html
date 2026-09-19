@@ -8,7 +8,7 @@
 </head>
 <body>
 <main>
-  <nav><a href="/">Home</a><a href="/faces">Faces</a><a href="/speech" aria-current="page">Speech</a><a href="/devices">Devices</a></nav>
+  <nav><a href="/">Home</a><a href="/faces">Faces</a><a href="/objects">Objects</a><a href="/speech" aria-current="page">Speech</a><a href="/devices">Devices</a></nav>
   <h1>Live speech</h1>
   <p class="muted small">Pick a microphone, click Start, and speak. Nothing is recorded until you click Start.</p>
 
@@ -18,7 +18,14 @@
     </label>
     <button id="refresh" type="button">Refresh devices</button>
   </div>
-  <p id="mic-help" class="small muted">Names appear after the first Start. Changing the microphone stops the session; click Start again.</p>
+  <p id="mic-help" class="small muted">Names appear after the first Start. Changing the microphone or backend stops the session; click Start again.</p>
+  <div class="row">
+    <label>Backend
+      <select id="backend" aria-describedby="backend-detail"></select>
+    </label>
+    <button id="recheck" type="button">Recheck status</button>
+  </div>
+  <p id="backend-detail" class="small muted">Checking server status…</p>
 
   <div class="row">
     <button id="start" type="button" class="primary">Start</button>

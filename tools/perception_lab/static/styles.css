@@ -37,6 +37,8 @@ nav { padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom:
 .row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 8px 0; }
 label { display: inline-flex; flex-direction: column; gap: 2px; font-size: 0.875rem; color: var(--muted); }
 label > select, label > input { font-size: 1rem; color: var(--fg); }
+label.wide { flex: 1 1 100%; }
+label.wide > input { width: 100%; }
 select, input[type="text"] {
   padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg);
   min-width: 200px; max-width: 100%;
@@ -54,6 +56,7 @@ button.primary { border-color: var(--fg); font-weight: 600; }
 .status.err { color: var(--err); }
 .error { color: var(--err); white-space: pre-wrap; margin: 8px 0; min-height: 1.5em; }
 .error:empty { display: none; }
+.error-text { color: var(--err); }
 dl.stats { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 8px 0; }
 dl.stats dt { color: var(--muted); }
 dl.stats dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

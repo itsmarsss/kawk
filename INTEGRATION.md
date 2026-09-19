@@ -2,6 +2,9 @@
 
 Current user correction: finish **Lane C (local perception)** and **Lane D (cloud
 adapters/deployment)**, plus the existing testing UI; push everything to `chud3`.
+Latest user direction: build **both for R&D** and compare smoothness. The brief
+cloud-only proposal is superseded. Measurements must name the differing local
+and cloud models and distinguish first use from warm behavior.
 Lane A world/memory/task implementation and Lane B device transport/display are
 outside this change. The interfaces below are the shared integration boundary.
 
@@ -17,6 +20,12 @@ namespace IDs across restarted connections. Whisper word times are relative to
 `t_start_hub`. Ask integrator before changing contracts, Makefile, or pyproject.
 
 ## Done
+
+- Lane C merged; genuine local YOLO-World, buffalo_l, Whisper and Silero fixtures
+  pass. CLIP is explicitly pinned; ONNX Runtime 1.22.0 avoids the 1.30 native
+  teardown crash observed with the combined model runtime.
+- Integrator owns typed config/factories, injected fixture references, comparison
+  runner and lab backend routing. Claude Code owns static UI changes.
 
 - Local face and real Baseten streaming Whisper testing UI authored by Claude
   Code Fable 5.1; fixture browser tests verify enrollment, recognition,

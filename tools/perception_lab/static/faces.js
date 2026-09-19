@@ -1,5 +1,5 @@
 import {
-  fetchJson, wsUrl, fmtMs, setStatus, setError, fillDeviceSelect, describeMediaError, onPageLeave, stopTracks,
+  fetchJson, wsUrl, fmtMs, setStatus, setError, fillDeviceSelect, describeMediaError, onPageLeave, stopTracks, setupBackendSelector,
 } from '/static/common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -9,9 +9,10 @@ const el = {
   model: $('model'), load: $('load'), inference: $('inference'), breakdown: $('breakdown'), roundtrip: $('roundtrip'),
   fps: $('fps'), size: $('size'), name: $('name'), enroll: $('enroll'), cancel: $('cancel'), enrollStatus: $('enroll-status'),
   gallery: $('gallery'), galleryError: $('gallery-error'),
+  backend: $('backend'), backendDetail: $('backend-detail'), recheck: $('recheck'), skipped: $('skipped'),
 };
 
-const RESPONSE_TIMEOUT_MS = 5000; // a lost reply frees the in-flight slot after this
+const RESPONSE_TIMEOUT_MS = 5000; // no reply in this time ends the session (at most one in flight per socket)
 const capable = Boolean(navigator.mediaDevices?.getUserMedia);
 
 const capture = document.createElement('canvas');
@@ -28,15 +29,35 @@ function newSession() {
   return {
     id: ++sessionSeq, phase: 'starting', ended: false, ws: null, stream: null, ready: null,
     inFlight: false, frameId: 0, captureAt: 0, sentAt: 0, lastSendAt: 0,
-    loopTimer: null, responseTimer: null, replyTimes: [], enrolling: false, timeouts: 0,
+    loopTimer: null, responseTimer: null, replyTimes: [], enrolling: false, skipped: 0,
   };
 }
 const isCurrent = (s) => s !== null && s === session && !s.ended;
 
+// Backend choice. Changing it stops any session and clears results; Start is required again.
+const backendUi = setupBackendSelector({
+  select: el.backend, detail: el.backendDetail, recheck: el.recheck, kind: 'face', defaultBackend: 'local',
+  onChange: (value, reason) => {
+    if (reason !== 'refreshed') {
+      if (session) endSession(session, { status: 'Backend changed; session stopped. Click Start to use the selected backend.' });
+      clearResults();
+    }
+    setButtons();
+  },
+});
+
+function clearResults() {
+  overlayCtx.clearRect(0, 0, el.overlay.width, el.overlay.height);
+  el.faces.replaceChildren(Object.assign(document.createElement('li'), { className: 'muted', textContent: 'Nothing yet.' }));
+  for (const key of ['model', 'load', 'inference', 'breakdown', 'roundtrip', 'fps', 'size', 'skipped']) el[key].textContent = '–';
+  setStatus(el.hint, '', '');
+}
+
 function setButtons() {
   const s = session;
   const running = s !== null && s.phase === 'running';
-  el.start.disabled = !capable || s !== null;
+  el.start.disabled = !capable || s !== null || !backendUi.configured;
+  el.backend.disabled = s !== null;
   el.stop.disabled = s === null;
   el.enroll.disabled = !running || s.enrolling;
   el.cancel.disabled = !running || !s.enrolling;
@@ -141,12 +162,12 @@ function tick(s) {
       s.ws.send(buffer);
       el.size.textContent = `${w}×${h}, ${(buffer.byteLength / 1024).toFixed(0)} KB`;
       clearTimeout(s.responseTimer);
+      // At most one request in flight per socket. If the reply never comes we must not send
+      // another frame on the same socket (a late first reply would be attributed to the second
+      // request and show a wrong latency), so the session ends and the user reconnects with Start.
       s.responseTimer = setTimeout(() => {
         if (!isCurrent(s) || !s.inFlight) return;
-        s.inFlight = false;
-        s.timeouts += 1;
-        setStatus(el.hint, `No reply from the server within ${RESPONSE_TIMEOUT_MS / 1000} s for one frame (${s.timeouts} so far). Skipped it and continuing.`, 'warn');
-        scheduleLoop(s);
+        endSession(s, { error: `No face reply within ${RESPONSE_TIMEOUT_MS / 1000} seconds. Start again to reconnect.` });
       }, RESPONSE_TIMEOUT_MS);
     });
   }, 'image/jpeg', 0.8);
@@ -159,8 +180,8 @@ function releaseSlot(s) {
 }
 
 function onFrame(s, msg) {
+  if (!isCurrent(s) || !s.inFlight) return; // no request outstanding: ignore rather than mis-attribute latency
   const now = performance.now();
-  const late = !s.inFlight; // reply arrived after the response timeout freed the slot
   releaseSlot(s);
   s.replyTimes.push(now);
   while (s.replyTimes.length && now - s.replyTimes[0] > 2000) s.replyTimes.shift();
@@ -168,9 +189,7 @@ function onFrame(s, msg) {
   const t = msg.timings_ms || {};
   el.inference.textContent = fmtMs(t.inference);
   el.breakdown.textContent = `decode ${fmtMs(t.decode)}, detection ${fmtMs(t.detection)}, embedding+alignment ${fmtMs(t.embedding_and_alignment)}, server total ${fmtMs(t.server_total)}`;
-  el.roundtrip.textContent = late
-    ? 'n/a (late reply)'
-    : `${fmtMs(now - s.sentAt)} send → reply (${fmtMs(now - s.captureAt)} incl. capture + JPEG encode)`;
+  el.roundtrip.textContent = `${fmtMs(now - s.sentAt)} send → reply (${fmtMs(now - s.captureAt)} incl. capture + JPEG encode)`;
   drawOverlay(msg);
   listFaces(msg);
   if (msg.detected_count > msg.accepted_count) {
@@ -274,7 +293,7 @@ function closeSocket(s) {
 }
 
 function openSocket(s) {
-  const ws = new WebSocket(wsUrl('/ws/faces'));
+  const ws = new WebSocket(wsUrl('/ws/faces', { backend: backendUi.value }));
   ws.binaryType = 'arraybuffer';
   s.ws = ws;
   ws.onopen = () => { if (isCurrent(s)) setStatus(el.status, 'Connected. Waiting for the face model…', 'warn'); };
@@ -285,7 +304,7 @@ function openSocket(s) {
     switch (msg.type) {
       case 'ready':
         s.ready = msg;
-        el.model.textContent = `${msg.model} on ${msg.provider}`;
+        el.model.textContent = `${msg.model || '–'} via ${msg.backend || backendUi.value}${msg.provider ? ` (${msg.provider})` : ''}`;
         el.load.textContent = fmtMs(msg.load_ms);
         if (s.phase === 'starting') {
           s.phase = 'running';
@@ -296,7 +315,15 @@ function openSocket(s) {
         }
         break;
       case 'frame': onFrame(s, msg); break;
-      case 'busy': releaseSlot(s); scheduleLoop(s); break;
+      case 'busy':
+        // The server skipped this frame (worker busy, or the cloud face request timed out). Free the
+        // slot, keep the last boxes on screen, count it, and continue with the latest frame.
+        s.skipped += 1;
+        el.skipped.textContent = String(s.skipped);
+        if (msg.reason === 'cloud_timeout') setStatus(el.hint, 'Cloud frame timed out; trying the latest frame.', 'warn');
+        releaseSlot(s);
+        scheduleLoop(s);
+        break;
       case 'enrollment_started':
         s.enrolling = true;
         setStatus(el.enrollStatus, `Enrolling ${msg.name}: 0 of 5 frames. Look at the camera.`, 'warn');
@@ -331,7 +358,7 @@ async function start() {
   const s = newSession();
   session = s;
   setError(el.error, '');
-  setStatus(el.hint, '', '');
+  clearResults(); // per-session metrics (incl. frames skipped) start fresh
   setStatus(el.enrollStatus, '', '');
   setButtons();
   try {
@@ -396,3 +423,4 @@ if (!capable) setError(el.error, 'This browser cannot access the camera here. Us
 setButtons();
 refreshDevices();
 loadGallery();
+backendUi.refresh().then(setButtons);

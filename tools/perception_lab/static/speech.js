@@ -1,5 +1,5 @@
 import {
-  wsUrl, fmtMs, fmtSeconds, setStatus, setError, fillDeviceSelect, describeMediaError, onPageLeave, stopTracks,
+  wsUrl, fmtMs, fmtSeconds, setStatus, setError, fillDeviceSelect, describeMediaError, onPageLeave, stopTracks, setupBackendSelector,
 } from '/static/common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -9,6 +9,7 @@ const el = {
   speaking: $('speaking'), model: $('model'), connect: $('connect'), elapsed: $('elapsed'), ctxrate: $('ctxrate'),
   chunks: $('chunks'), buffered: $('buffered'), lagFirst: $('lag-first'), lagFinal: $('lag-final'),
   transcript: $('transcript'),
+  backend: $('backend'), backendDetail: $('backend-detail'), recheck: $('recheck'),
 };
 
 const MAX_ROWS = 100;
@@ -49,10 +50,28 @@ function resetGate() {
   Object.assign(gate, { speaking: false, quietSince: 0, utterance: 0, pendingOnset: null, lastEnd: null, lastEndUtt: -1, endSealed: false, lastEndUsed: false });
 }
 
+// Backend choice. Changing it stops any session and clears results; Start is required again.
+const backendUi = setupBackendSelector({
+  select: el.backend, detail: el.backendDetail, recheck: el.recheck, kind: 'speech', defaultBackend: 'baseten',
+  onChange: (value, reason) => {
+    if (reason !== 'refreshed') {
+      if (session) endSession(session, { status: 'Backend changed; session stopped. Click Start to use the selected backend.' });
+      clearResults();
+    }
+    setButtons();
+  },
+});
+
+function clearResults() {
+  clearTranscript();
+  for (const key of ['model', 'connect', 'elapsed', 'ctxrate', 'chunks', 'buffered']) el[key].textContent = '–';
+}
+
 // ---- UI helpers ------------------------------------------------------------
 function setButtons() {
   const s = session;
-  el.start.disabled = !capable || s !== null;
+  el.start.disabled = !capable || s !== null || !backendUi.configured;
+  el.backend.disabled = s !== null;
   el.stop.disabled = s === null || s.phase === 'stopping';
   el.mic.disabled = s !== null && (s.phase === 'connecting' || s.phase === 'stopping');
 }
@@ -244,7 +263,7 @@ function closeSocket(s) {
 
 // ---- websocket ---------------------------------------------------------------
 function openSocket(s) {
-  const ws = new WebSocket(wsUrl('/ws/speech'));
+  const ws = new WebSocket(wsUrl('/ws/speech', { backend: backendUi.value }));
   ws.binaryType = 'arraybuffer';
   s.ws = ws;
   ws.onopen = () => { if (isCurrent(s)) setStatus(el.status, 'Connected to server. Waiting for Whisper…', 'warn'); };
@@ -261,8 +280,8 @@ function openSocket(s) {
         s.ready = msg;
         s.readyAt = performance.now();
         maxSessionS = msg.max_session_s || 600;
-        el.model.textContent = msg.model_id || '–';
-        el.connect.textContent = `${fmtMs(msg.connect_ms)} (server to Whisper, measured on server)`;
+        el.model.textContent = `${msg.model_id || msg.model || '–'} via ${msg.backend || backendUi.value}`;
+        el.connect.textContent = `${fmtMs(msg.connect_ms)} (server to speech backend, measured on server)`;
         s.phase = 'ready';
         setButtons();
         setStatus(el.status, 'Whisper ready. Starting microphone…', 'warn');
@@ -392,3 +411,4 @@ if (!navigator.mediaDevices?.getUserMedia) {
 }
 setButtons();
 refreshDevices();
+backendUi.refresh().then(setButtons);

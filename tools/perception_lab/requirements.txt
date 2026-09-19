@@ -1,7 +1,2 @@
-fastapi==0.141.1
-uvicorn==0.53.0
-websockets==15.0.1
-numpy==1.26.4
-opencv-python-headless==4.11.0.86
-insightface==0.7.3
-onnxruntime==1.22.0
+# From the repository root with Python 3.12. Prefer uv sync and uv.lock.
+-e .[local,sim,lab,cloud]
