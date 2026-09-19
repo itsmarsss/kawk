@@ -64,6 +64,34 @@ def seq_delta(a: int, b: int) -> int:
     return ((b - a + 0x8000) & 0xFFFF) - 0x8000
 
 
+def jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    """(width, height) from a JPEG's SOF marker, or None if unparseable.
+
+    The hub must not trust the config'd resolution — devices may ignore config
+    or stream fixtures of arbitrary size, and every §8 attribute is derived
+    from box/frame_wh geometry.
+    """
+    n = len(data)
+    if n < 4 or data[0:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 9 < n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:  # standalone markers
+            i += 2
+            continue
+        seg_len = int.from_bytes(data[i + 2 : i + 4], "big")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):  # SOFn
+            height = int.from_bytes(data[i + 5 : i + 7], "big")
+            width = int.from_bytes(data[i + 7 : i + 9], "big")
+            return (width, height)
+        i += 2 + seg_len
+    return None
+
+
 # ---- JSON control plane -----------------------------------------------------
 
 CONTROL_TYPES = {"hello", "config", "card", "ping", "pong"}
