@@ -64,7 +64,7 @@ warmer failed on the commit-pinned mirror because it expected a nonexistent HF
 `refs/` directory; the direct pinned build download avoids that path. Neither
 packaging workaround relaxes checkpoint hashing or strict model loading.
 
-For an authorized idle endpoint, set minimum replicas to0, maximum to1 and a
+For an authorized idle endpoint, set minimum replicas to 0, maximum to 1 and a
 short scale-down delay using `baseten model deployment update-autoscaling`.
 Verify the accepted settings and actual zero active replicas separately; an
 accepted update alone does not establish that billing has stopped. A cold
@@ -104,6 +104,34 @@ kept in the ignored `results/` evidence folder, outside Git. The completed GPU
 check established arriving-frame inference; native endpoint and Mac/UI results
 are recorded separately. No throughput is inferred from older preloaded-video
 benchmarks.
+
+The native production endpoint also passed an authenticated Mac hub-client smoke:
+two sequential copies of the raw 960×540 fixture, with three concepts, returned
+four person boxes each and distinct generation namespaces. Request times were
+859.4 and 901.4 ms; server inference totals were 565.5 and 617.7 ms. These are two
+warm fixture updates, not a webcam or general accuracy evaluation. The first
+native request exceeded the client's 10-second timeout; server logs show inference
+finished and cleaned up afterward, then the warm retry passed. Native
+`model.load()` took 80.334 seconds including imports/checkpoint work. A scale-to-zero
+restart therefore needs a separate cold-start budget; warm latency is not the
+time to the first usable result after inactivity.
+
+Verified model ID: `w7m74v6w`; deployment: `w55ov5p`. The production socket is
+`wss://model-w7m74v6w.api.baseten.co/environments/production/websocket`.
+Set `BASETEN_SAM_MODEL_ID=w7m74v6w` and `REMEMBER_SAM_ALLOW_WINDOWED=1` in the
+client environment, using the existing authorized Baseten credential resolver.
+The recorded deployed instance uses minimum0 / maximum1 / idle60s autoscaling;
+its final observed lifecycle state is recorded in `verification.json`.
+
+The cold server log interval from the first prompt to final session cleanup was
+about 11.64 seconds; it is not a measured client roundtrip. The integrator also checked
+the actual browser route with a prerecorded fake camera: a person box rendered,
+Start/Stop and the reset-ID notice worked, and there were no JavaScript errors.
+That single browser reply took 794 ms, or 803 ms including capture/JPEG encoding.
+An independent identical-input bus-fixture comparison (810×1080, three warm
+frames) measured 44.91 ms median locally versus 842.10 ms through public SAM. The
+two backends returned different object sets; this is a timing comparison, not an
+accuracy ranking. The evidence paths and input scopes are in `verification.json`.
 
 Offline tests (`hub/tests/test_cloud_sam_server.py`) use a fake predictor only to
 verify protocol bounds, no-future-frame windows, ID reset, coordinate conversion,

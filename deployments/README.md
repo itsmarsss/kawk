@@ -9,7 +9,7 @@ weights, or change another teammate's service.
 |---|---|
 | Whisper | Existing `wdlg2oe3` / `wldeyy7`. Two real-service fixture utterances returned correct finals through the new adapter; zero dropped frames. Keep teammate deployment untouched. [Details](stt/DEPLOY.md), [evidence](stt/verification.json). |
 | Face | Existing owned `qvm6y6eq` / `32z5mm9`, exact `buffalo_l` pack and HTTP schema. Real new-adapter and browser checks passed. Verified SCALED_TO_ZERO with zero active replicas after testing; min=0/max=1 and 60-second idle delay keep it callable for manual tests with cold-start latency. [Details](face/DEPLOY.md), [evidence](face/verification.json). |
-| SAM3.1 | Explicit **windowed R&D**, not native persistent incremental tracking. Exact multiplex checkpoint; only received JPEGs enter the bounded window. IDs reset each update. GPU, loopback and public-endpoint verification are separate gates. See [details](sam3p1/DEPLOY.md) and its results; do not infer availability from a training job. |
+| SAM3.1 | Explicit **windowed R&D**, not native persistent incremental tracking. Exact multiplex checkpoint; only received JPEGs enter the bounded window. IDs reset each update. Worker GPU, public endpoint, and browser fixture checks passed separately. Native cold inference exceeded a 10-second timeout; reconnect and warm frames passed. See [details](sam3p1/DEPLOY.md) and [verified measurements/cleanup state](sam3p1/verification.json). |
 | Jev | Official API verified, whole-bank requests and strict response parsing tested offline. No live inference or latency claim without a TypeSafe key. [Details](jev/DEPLOY.md). |
 
 Cloud constructors are `BasetenSamBackend(model_id, api_key)`,

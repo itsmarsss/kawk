@@ -40,7 +40,7 @@
     "active_sessions": 0
   },
   "limitations": [
-    "worker-loopback only; no Mac/WAN or webcam latency",
+    "worker-loopback and public Mac client results are separate measurements; no live webcam validation",
     "small fixture sample; no long-running memory stability or accuracy evaluation",
     "windowed reinitialization; no persistent identities",
     "native Truss endpoint verification recorded separately"
@@ -49,11 +49,110 @@
   "checkpoint_sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6",
   "code_revision": "2345a4ad109ac29c569da749c91d84f10dc08c40",
   "checkpoint_strict_load": true,
-  "native_endpoint_verified": false,
-  "native_status": "final explicit-checkpoint-path image building; public endpoint not yet verified",
+  "native_endpoint_verified": true,
+  "native_status": "verified production endpoint; SCALED_TO_ZERO with zero active replicas after all test sockets closed",
   "evidence_bundle": "sam31-windowed/results.json, setup.json, pip-freeze.txt,11 JPEG overlays (kept outside Git)",
   "native_packaging_regressions": [
     "direct managed entry-file import without package context",
     "absolute entry imports; python3 build executable; commit-pinned HF build download"
-  ]
+  ],
+  "native_public_smoke": {
+    "scope": "Mac hub client to public production WebSocket; two sequential identical fixture JPEGs, not webcam/browser",
+    "frame_dimensions": [
+      960,
+      540
+    ],
+    "concepts": [
+      "person",
+      "car",
+      "bicycle"
+    ],
+    "frames": 2,
+    "objects_per_frame": [
+      4,
+      4
+    ],
+    "request_total_ms": [
+      859.3832501210272,
+      901.4266668818891
+    ],
+    "server_total_ms": [
+      567.1065794304013,
+      619.3341109901667
+    ],
+    "inference_total_ms": [
+      565.5264873057604,
+      617.7163338288665
+    ],
+    "reset_identity_namespace_verified": true,
+    "first_cold_request": "timed out at client 10-second limit; server completed inference and removed sessions afterward; warm retry succeeded",
+    "native_model_load_ms_including_imports_and_checkpoint": 80334,
+    "evidence": "results/native-client-warm.jsonl; native-client-smoke.jsonl; native-final.log (outside Git)",
+    "limitations": [
+      "n=2 warm updates only",
+      "same fixture twice; no general accuracy or live webcam claim",
+      "first inference can exceed 10s; scale-to-zero restart requires cold-start budget"
+    ],
+    "cold_first_prompt_to_cleanup_seconds_approx": 11.64,
+    "cold_interval_scope": "server log interval from first add_prompt at12:14:54.697 through final close_session at12:15:06.334; not client roundtrip or total cold start",
+    "model_id": "w7m74v6w",
+    "deployment_id": "w55ov5p",
+    "production_websocket_url": "wss://model-w7m74v6w.api.baseten.co/environments/production/websocket"
+  },
+  "integration_verification": {
+    "source": "integrator measurements; output JSON read and checked by deployment agent",
+    "matched_fixture": {
+      "dimensions": [
+        810,
+        1080
+      ],
+      "concept_count": 3,
+      "warm_frames_per_backend": 3,
+      "local_median_request_ms": 44.91,
+      "cloud_median_request_ms": 842.1,
+      "local_objects": "4 people",
+      "cloud_objects": "4 people and phone",
+      "quality_claim": false
+    },
+    "browser": {
+      "passed": true,
+      "reply_ms": 794,
+      "reply_including_jpeg_ms": 803,
+      "server_wall_ms": 581,
+      "person_score": 0.91,
+      "checks": [
+        "actual production detection rendered",
+        "windowed/reset-ID notice visible",
+        "Start and Stop work",
+        "no JavaScript errors",
+        "all test sockets closed"
+      ],
+      "input": "prerecorded fake camera; no live user capture"
+    },
+    "evidence": [
+      "outputs/perception-lab/objects-local-cloud-comparison.json",
+      "outputs/perception-lab/browser-ab-sam.json",
+      "outputs/perception-lab/objects-sam-ab.png"
+    ]
+  },
+  "cleanup": {
+    "verified": true,
+    "checked_at_utc": "2026-09-19T12:18:48.185577+00:00",
+    "model_id": "w7m74v6w",
+    "deployment_id": "w55ov5p",
+    "status": "SCALED_TO_ZERO",
+    "active_replica_count": 0,
+    "is_production": true,
+    "autoscaling_settings": {
+      "autoscaling_window": 60,
+      "concurrency_target": 1,
+      "max_replica": 1,
+      "min_replica": 0,
+      "scale_down_delay": 60,
+      "target_utilization_percentage": 70
+    },
+    "endpoint_left_callable": true,
+    "deadline_guard_cancelled_only_after_verified_zero": true,
+    "other_deployments_untouched": true
+  }
 }
