@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "remember-ui/envelope/1.0",
+  "title": "Remember UI event envelope",
+  "description": "Every provider -> UI message. schema_version follows major.minor; the UI accepts any 1.x and rejects everything else.",
+  "type": "object",
+  "required": ["schema_version", "event_id", "session_id", "occurred_at", "type", "payload"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
+    "event_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "seq": { "type": "integer", "minimum": 0, "description": "Optional per-session monotonic sequence; lower-or-equal values are dropped as stale." },
+    "type": {
+      "type": "string",
+      "enum": [
+        "session.started", "session.stopped", "provider.status", "scene.changed",
+        "profile.upserted", "encounter.started", "encounter.ended",
+        "recognition.updated", "recognition.cleared",
+        "note.upserted", "note.deleted",
+        "reminder.upserted", "reminder.deleted",
+        "transcript.updated", "transcript.cleared",
+        "answer.pending", "answer.resolved",
+        "moment.recording", "moment.saved", "moment.failed", "moment.deleted",
+        "display.updated", "enrollment.updated"
+      ]
+    },
+    "payload": { "type": "object", "description": "Shape per type is defined in types.d.ts and enforced at runtime by contracts/envelope.js validators." }
+  },
+  "additionalProperties": false
+}

@@ -26,6 +26,7 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["hub/tests", "tools/perception_lab/test_backend.py"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 
 [tool.ruff]

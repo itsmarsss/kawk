@@ -20,7 +20,8 @@ Optionally set `REMEMBER_FACE_MODEL_ROOT` (default `data`) to the directory cont
 downloaded automatically. Set `BASETEN_API_KEY` on the server or use the existing
 Mac Baseten CLI profile `h100-permanent`; the reserve account is never selected.
 
-Open http://127.0.0.1:8081/. The server listens on `0.0.0.0:8081`.
+Open http://127.0.0.1:8081/lab. The product UI preview lives at `/`; see
+[its integration guide](REMEMBER_UI.md). The server listens on `0.0.0.0:8081`.
 `PORT`, `REMEMBER_GALLERY_PATH`, `REMEMBER_FACE_PROVIDER`, and
 `BASETEN_STT_MODEL_ID`, `BASETEN_FACE_MODEL_ID`, `BASETEN_SAM_MODEL_ID` and
 `REMEMBER_MODEL_DIR` can override defaults. The default face provider is CoreML

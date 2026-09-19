@@ -55,8 +55,7 @@ def test_enrollment_resets_on_multiple_faces_and_stabilizes(tmp_path):
     for _ in range(5):
         result = session.process(frame(vector()))
     assert result["enrollment"]["status"] == "complete"
-    for _ in range(2):
-        assert session.process(frame(vector()))["faces"][0]["stable_name"] is None
+    assert session.process(frame(vector()))["faces"][0]["stable_name"] is None
     assert session.process(frame(vector()))["faces"][0]["stable_name"] == "Tester"
     for _ in range(3):
         result = session.process(frame(vector(1)))

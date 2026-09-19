@@ -242,7 +242,7 @@ function listFaces(msg) {
     const detail = document.createElement('span'); detail.className = 'small muted';
     const m = face.match || {};
     const raw = m.name ? `raw match ${m.name} (${m.similarity.toFixed(2)})` : (m.similarity != null ? `best similarity ${m.similarity.toFixed(2)}, below threshold` : 'gallery empty');
-    detail.textContent = `${raw}; detection ${face.detection_score.toFixed(2)}${face.stable_name ? '' : '; stable name needs 3 consistent frames'}`;
+    detail.textContent = `${raw}; detection ${face.detection_score.toFixed(2)}${face.stable_name ? '' : '; stable name needs 2 agreeing matches in the last 3 frames'}`;
     li.append(main, detail);
     return li;
   }));

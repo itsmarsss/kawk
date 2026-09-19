@@ -3,6 +3,38 @@
 The product specification is in [AGENTS.md](AGENTS.md). GitHub's default branch
 is `main`; William's work is on `chud3`.
 
+## V1 product interface
+
+Open `http://127.0.0.1:8081/` for the live camera and 240×240 device-display preview.
+V1 connects the existing face, object and speech services to temporary profiles,
+encounters, notes, reminders and playable camera/microphone clips. Person reminders
+join by the real enrolled gallery UUID. The display uses the plan's card priorities
+and expiry rules; it is a browser preview of the LCD, not a hardware connection.
+
+V1 defaults to explicit speech commands, manual moment marking, and clips after
+confirmed object disappearance. Say or type “remind me to ask Bob about dinner”
+to attach a reminder to Bob's enrolled profile for the next encounter. Rules do
+not provide general semantic directedness or significance judgments.
+
+An optional direct Jev connection gates live speech and significant clips without
+the production memory/database or agent harness. Set `REMEMBER_V1_DECISIONS=typesafe`
+and a private `TYPESAFE_API_KEY` in the server environment, then restart. It is
+verified with offline adapter fixtures; live Jev remains unverified without a key.
+Failures are explicit and do not silently run rule-based actions. Scripted Demo
+mode remains separate from live data. See the
+[UI integration guide](tools/perception_lab/REMEMBER_UI.md) for supported requests.
+
+Use `make serve-ui` after the full setup below for local perception and the existing
+cloud speech service. Real clip encoding also needs `ffmpeg` and `ffprobe` on PATH.
+`make serve-product-ui` starts the lightweight UI/session service without installing
+local ML packages; Demo mode needs no model weights, capture permission or cloud key.
+Media starts only after Start. Existing component tests remain at `/lab`.
+
+Live session records and footage are temporary: Stop preserves them for recall;
+Reset or session expiry removes them. Face enrollments use the existing durable
+gallery and are not deleted by a product-session reset. This is intentionally not
+the future memory service.
+
 ## Local/cloud R&D lab
 
 The standalone [perception lab](tools/perception_lab/README.md) provides browser
@@ -17,7 +49,7 @@ make fetch-local-models
 make serve-ui
 ```
 
-Open http://127.0.0.1:8081/. The server listens on `0.0.0.0:8081`.
+Open http://127.0.0.1:8081/lab. The server listens on `0.0.0.0:8081`.
 Mac camera/microphone access works on localhost. Other devices need trusted
 HTTPS; the Devices page explains this and does not advertise an unavailable link.
 Model loading happens before capture where possible; the first inference can
@@ -28,7 +60,7 @@ still warm native kernels. Local assets and enrollments stay out of git.
 | Objects | YOLO-World small, CPU, explicit vocabulary | SAM 3.1 Multiplex, experimental windowed mode where supported |
 | Faces | buffalo_l, CoreML with CPU partitions | Same buffalo_l embedding space, Baseten HTTP |
 | Speech | faster-whisper Small/int8 CPU + Silero ONNX | Whisper Large v3 streaming, Baseten WebSocket |
-| Decisions | Injected synthetic answers for contract tests only | TypeSafe Jev; key required for live verification |
+| Decisions | Explicit V1 command and object rules | Optional TypeSafe Jev bridge; key required for live verification |
 
 Objects and speech compare different model sizes/algorithms, so compare output
 quality as well as speed. SAM's released multiplex predictor consumes finite

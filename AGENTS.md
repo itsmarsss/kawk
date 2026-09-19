@@ -284,9 +284,13 @@ pure-hub `memory/faces.py` gallery: `match(embedding) → (person_id, sim) | Non
 - Both `local_insight.py` and the Truss use **`buffalo_l`** so enrollments transfer across the
   backend switch (CPU cost at ≤5 fps is fine on an M-series MacBook). `buffalo_s` is only an
   emergency fallback — switching packs requires re-enrolling (checklist item).
-- Identity is decided by **track-level majority vote over 3 consecutive face observations**;
-  when the vote stabilizes, the world model emits an `identity_changed` delta (→ reactive Jev
-  tick, §7). Hysteresis: once displayed, a name only changes after a full new 3-vote.
+- Identity is decided by **two agreeing matches within the latest three face observations**,
+  with a positive match on the current observation. A conflicting positive identity clears
+  the previous name and its votes immediately; alternating people cannot accumulate a
+  majority. A weak observation may retain the confirmed name for at most one second and
+  fewer than three consecutive unknown observations. The V1 lab implements this policy;
+  the future world model emits an `identity_changed` delta when identity stabilizes
+  (→ reactive Jev tick, §7). Matching thresholds and one-second track expiry stay unchanged.
 - Enrollment flow (task, §9): unknown stable face → Jev confirms → display "Who is this? Say
   just their name" → STT final → mean 5–10 filtered embeddings, re-L2-normalize → one centroid.
 - **`baseten_http.py`**: plain HTTP predict (stateless, autoscaling-safe). **`mock.py`**:
@@ -529,7 +533,7 @@ Missing key + non-mock backend = loud actionable startup error, not a crash mid-
 | Snapshot + Jev bank | 100–350 ms |
 | Task + render → device paint | < 150 ms |
 | **End of question → answer card** | **< 1.5 s** |
-| **Person appears → profile card** (SAM track + 3-vote @ ≤5 fps + reactive tick) | **< 2.5 s** |
+| **Person appears → profile card** (SAM track + supported 2-of-3 vote @ ≤5 fps + reactive tick) | **< 2.5 s** |
 
 ## 13. Overnight milestones (in order; each ends green)
 

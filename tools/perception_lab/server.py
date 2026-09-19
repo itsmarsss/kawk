@@ -27,6 +27,8 @@ from .faces import FaceEngine, FaceSession, Gallery, MODEL
 from .speech import METADATA, MODEL_ID, read_key, transcript_event
 from .backends import cloud_face_backend, configured_backends, jpeg_dimensions, selection
 from .experiments import local_speech_socket, objects_socket
+from .product_routes import ProductSessions
+from .product_decisions import backend_from_environment, MODEL as JEV_MODEL
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -43,8 +45,15 @@ async def lifespan(_app):
         with contextlib.suppress(Exception):
             await ensure_engine()  # Failure is exposed in /api/status; speech remains usable.
     task = asyncio.create_task(preload())
-    yield
-    await task
+    cleanup = asyncio.create_task(product_sessions.cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup
+        await product_sessions.close()
+        await task
 
 
 app = FastAPI(title="Perception test services", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -61,6 +70,19 @@ def same_origin(headers):
     return not origin or urlsplit(origin).netloc == headers.get("host")
 
 
+product_sessions = ProductSessions(gallery, same_origin, decision_factory=backend_from_environment)
+
+
+def decision_configuration():
+    mode = os.getenv("REMEMBER_V1_DECISIONS", "rules").strip().lower()
+    configured = mode == "rules" or (mode == "typesafe" and bool(os.getenv("TYPESAFE_API_KEY", "").strip()))
+    return {"backend": mode, "configured": configured,
+            "model": JEV_MODEL if mode == "typesafe" else None,
+            "message": ("V1 command and object rules; Jev is not connected" if mode == "rules" else
+                        "Jev configured; live connection checked on capture" if configured else
+                        "Set REMEMBER_V1_DECISIONS=typesafe and a server-side TYPESAFE_API_KEY, then restart")}
+
+
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
     if request.method not in ("GET", "HEAD", "OPTIONS") and not same_origin(request.headers):
@@ -70,7 +92,7 @@ async def origin_guard(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     script_hashes = []
-    if request.url.path in ("/", "/faces", "/speech", "/devices", "/objects"):
+    if request.url.path in ("/", "/lab", "/faces", "/speech", "/devices", "/objects"):
         filename = "index.html" if request.url.path == "/" else request.url.path[1:] + ".html"
         path = STATIC / filename
         if path.exists():
@@ -115,6 +137,7 @@ async def status():
             "speech": {"model_id": MODEL_ID, "configured": configured, "sample_rate": 16000,
                        "chunk_samples": 512, "max_session_s": MAX_SESSION_S},
             "backends": configured_backends(engine is not None, engine_error),
+            "decisions": decision_configuration(),
             "gallery_count": len(gallery.entries), "https_port": 8443,
             "https_available": bool(os.getenv("REMEMBER_HTTPS_ENABLED")),
             "lan_addresses": lan_addresses(), "ui_ready": (STATIC / "index.html").exists()}
@@ -196,8 +219,10 @@ async def faces_socket(ws: WebSocket):
                     if not isinstance(control, dict):
                         raise ValueError("Expected an object")
                     if control.get("type") == "enroll":
-                        session.begin_enrollment(control.get("name", ""))
-                        await ws.send_json({"type": "enrollment_started", "name": session.enrolling["name"]})
+                        session.begin_enrollment(control.get("name", ""),
+                                                 target_track_id=control.get("target_track_id"))
+                        await ws.send_json({"type": "enrollment_started", "name": session.enrolling["name"],
+                                            "target_track_id": session.enrolling.get("target_track_id")})
                     elif control.get("type") == "cancel_enrollment":
                         session.enrolling = None
                         await ws.send_json({"type": "enrollment_cancelled"})
@@ -362,6 +387,7 @@ async def object_socket(ws: WebSocket):
 
 
 @app.get("/")
+@app.get("/lab")
 @app.get("/faces")
 @app.get("/speech")
 @app.get("/devices")
@@ -374,6 +400,7 @@ async def page(request: Request):
     return FileResponse(path)
 
 
+app.include_router(product_sessions.router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

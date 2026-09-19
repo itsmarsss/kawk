@@ -1,10 +1,11 @@
-.PHONY: test test-ui lint fixtures fetch-local-models verify-local serve-ui smoke enroll compare
+.PHONY: test test-ui lint fixtures fetch-local-models verify-local serve-ui serve-product-ui smoke enroll compare
 
 test:
 	uv run pytest -q
 
 test-ui:
 	node tools/perception_lab/static/tests/faces_guard_test.mjs
+	node tools/perception_lab/static/remember/tests/run.mjs
 
 lint:
 	uv run ruff check hub scripts deployments
@@ -21,6 +22,9 @@ verify-local:
 
 serve-ui:
 	uv run --extra local --extra sim --extra lab --extra cloud python -m tools.perception_lab.server
+
+serve-product-ui:
+	uv run --extra lab --extra cloud python -m tools.perception_lab.server
 
 compare:
 	uv run --extra local --extra sim --extra cloud python scripts/compare_backends.py $(ARGS)
