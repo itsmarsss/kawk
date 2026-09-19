@@ -296,6 +296,35 @@ async def test_ring_and_completed_retention_are_bounded_and_eviction_is_announce
 
 
 @pytest.mark.asyncio
+async def test_delete_saved_clip_removes_file_and_is_retryable_on_disk_error(monkeypatch):
+    clock, encoder = Clock(), Encoder()
+    service = SessionClipBuffer(clock=clock, sleep=clock.sleep, encoder=encoder)
+    try:
+        feed(service, clock, 95, 100)
+        service.trigger(100, "delete-saved")
+        feed(service, clock, 100.2, 105)
+        result = await finish(service, clock, "delete-saved", 105)
+        path = result.clip.path
+        original_unlink = Path.unlink
+
+        def fail(target, *args, **kwargs):
+            if target == path:
+                raise OSError("disk unavailable")
+            return original_unlink(target, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", fail)
+            with pytest.raises(OSError):
+                await service.delete("delete-saved")
+        assert service.get("delete-saved").status == "saved" and path.exists()
+        assert await service.delete("delete-saved")
+        assert service.get("delete-saved") is None and not path.exists()
+        assert not await service.delete("delete-saved")
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_delete_during_recording_cannot_create_a_late_file():
     clock, encoder = Clock(), Encoder()
     service = SessionClipBuffer(clock=clock, sleep=clock.sleep, encoder=encoder)

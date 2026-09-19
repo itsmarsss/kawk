@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import math
 import struct
@@ -19,12 +20,13 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from .clips import SessionClipBuffer
-from .product import ProductSession, iso
+from .product import ProductSession, iso, text
 from .product_decisions import DecisionEvent, V1DecisionBridge
 
 
 class BrowserSession:
-    def __init__(self, gallery_people, *, decision_backend=None):
+    def __init__(self, gallery_people, *, decision_backend=None, note_memory=None, delete_person=None,
+                 on_note_change=None):
         self.id = uuid.uuid4().hex
         self.created_at = self.last_used = time.time()
         self.queue = asyncio.Queue(maxsize=256)
@@ -40,19 +42,28 @@ class BrowserSession:
         self.decision_sources = OrderedDict()
         self.last_decision_state = ""
         self.last_perception_decision = 0.0
+        self.delete_person = delete_person
+        self.on_note_change = on_note_change
+        self._syncing_note = False
+        self._persisted_note_profiles = {}
         self.decision_status = {
             "backend": "typesafe" if decision_backend else "rules",
             "phase": "idle" if decision_backend else "rules",
             "model": getattr(decision_backend, "model", None),
             "message": "Jev waits for capture" if decision_backend else "V1 command and object rules; Jev is not connected",
         }
-        self.clips = SessionClipBuffer(on_update=self._clip_update)
         self.product = ProductSession(
             self.id, self.enqueue, gallery_people=gallery_people,
             trigger_clip=self._trigger_clip, control=self._control,
             auto_capture_rules=decision_backend is None,
             on_decision_event=self._decision_source,
+            note_memory=note_memory,
         )
+        self._persisted_note_profiles = {
+            ident: note["profile_id"] for ident, note in self.product.notes.items()
+            if self.product.profiles.get(note["profile_id"], {}).get("kind") == "person"
+        }
+        self.clips = SessionClipBuffer(on_update=self._clip_update)
         self.decisions = V1DecisionBridge(
             decision_backend, on_voice=self._voice_decision,
             on_moment=self._significant_moment, on_status=self._decision_status,
@@ -188,6 +199,57 @@ class BrowserSession:
             self.queue.put_nowait(message)
         except asyncio.QueueFull:
             self.overflow = True
+        self._publish_note_change(message)
+
+    def _publish_note_change(self, message):
+        if self.product.note_memory is None:
+            return
+        kind, payload = message.get("type"), message.get("payload", {})
+        if kind == "note.upserted":
+            note = payload["note"]
+            profile_id = note["profile_id"]
+            if self.product.profiles.get(profile_id, {}).get("kind") != "person":
+                self._persisted_note_profiles.pop(note["id"], None)
+                return  # Object notes belong only to the originating capture session.
+            self._persisted_note_profiles[note["id"]] = profile_id
+        elif kind == "note.deleted":
+            profile_id = self._persisted_note_profiles.pop(payload["note_id"], None)
+            if profile_id is None:
+                return
+        elif kind == "profile.deleted":
+            for ident, profile_id in list(self._persisted_note_profiles.items()):
+                if profile_id == payload["profile_id"]:
+                    self._persisted_note_profiles.pop(ident)
+            return
+        else:
+            return
+        if self.on_note_change is not None and not self._syncing_note:
+            self.on_note_change(self, kind, payload, profile_id)
+
+    def sync_person_note(self, kind, payload, profile_id):
+        """Apply an already-persisted peer change without writing or rebroadcasting it."""
+        if self.closed or self.product.profiles.get(profile_id, {}).get("kind") != "person":
+            return
+        self._syncing_note = True
+        try:
+            old_profile = None
+            if kind == "note.upserted":
+                note = copy.deepcopy(payload["note"])
+                old = self.product.notes.pop(note["id"], None)
+                old_profile = old["profile_id"] if old else None
+                self.product.notes[note["id"]] = note
+            else:
+                ident = payload["note_id"]
+                old = self.product.notes.pop(ident, None)
+                old_profile = old["profile_id"] if old else None
+                self.product._deleted_notes[ident] = None
+                while len(self.product._deleted_notes) > 512:
+                    self.product._deleted_notes.popitem(last=False)
+            self.product._emit(kind, copy.deepcopy(payload))
+            if self.product.foreground and self.product.foreground in (profile_id, old_profile):
+                self.product._profile_card(self.product.foreground)
+        finally:
+            self._syncing_note = False
 
     def _control(self, control):
         self.enqueue({"type": "v1.control", "control": control})
@@ -267,7 +329,27 @@ class BrowserSession:
             command = message.get("command")
             if not isinstance(command, dict):
                 raise ValueError("Expected a command object")
-            receipt = self.product.dispatch(command)
+            if command.get("type") == "profile.delete":
+                payload = command.get("payload", {})
+                if not isinstance(payload, dict):
+                    raise ValueError("Expected command payload")
+                ident = text(payload.get("profile_id"), "profile_id", 128)
+                if self.delete_person is None:
+                    raise RuntimeError("Person deletion is not available in this session")
+                self.delete_person(ident)
+                receipt = {"ok": True}
+            elif command.get("type") == "moment.delete":
+                payload = command.get("payload", {})
+                if not isinstance(payload, dict):
+                    raise ValueError("Expected command payload")
+                ident = text(payload.get("moment_id"), "moment_id", 128)
+                try:
+                    await self.clips.delete(ident)
+                except OSError as exc:
+                    raise RuntimeError("Could not delete this moment's clip; please retry") from exc
+                receipt = self.product.dispatch(command)
+            else:
+                receipt = self.product.dispatch(command)
             if command.get("type") == "capture.status":
                 payload = command.get("payload", {})
                 if payload.get("camera") == "live" and not self.camera_active:
@@ -284,8 +366,6 @@ class BrowserSession:
                         self.decision_tokens.clear()
                         self.decision_sources.clear()
                         self.last_decision_state = ""
-            if command.get("type") == "moment.delete":
-                await self.clips.delete(command.get("payload", {}).get("moment_id", ""))
             self.enqueue({"type": "v1.ack", "request_id": message.get("request_id"),
                           "receipt": receipt})
         elif kind == "stream.state":
@@ -347,11 +427,13 @@ class BrowserSession:
 
 class ProductSessions:
     """Small local resource owner; expires abandoned tabs and all temporary footage."""
-    def __init__(self, gallery, same_origin, *, max_sessions=4, idle_ttl=900, decision_factory=None):
+    def __init__(self, gallery, same_origin, *, max_sessions=4, idle_ttl=900, decision_factory=None,
+                 note_memory=None):
         self.gallery, self.same_origin = gallery, same_origin
         self.max_sessions, self.idle_ttl = max_sessions, idle_ttl
         self.sessions = {}
         self.decision_factory = decision_factory
+        self.note_memory = note_memory
         self.router = APIRouter()
         self.router.add_api_route("/api/v1/sessions", self.create, methods=["POST"])
         self.router.add_api_route("/api/v1/sessions/{session_id}", self.snapshot, methods=["GET"])
@@ -376,7 +458,12 @@ class ProductSessions:
 
     async def close(self):
         sessions, self.sessions = list(self.sessions.values()), {}
-        await asyncio.gather(*(s.close() for s in sessions))
+        results = await asyncio.gather(*(s.close() for s in sessions), return_exceptions=True)
+        if self.note_memory is not None:
+            self.note_memory.close()
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     def get(self, session_id):
         session = self.sessions.get(session_id)
@@ -393,12 +480,48 @@ class ProductSessions:
             backend = self.decision_factory() if self.decision_factory else None
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(503, str(exc)) from None
-        session = BrowserSession(self.gallery.list(), decision_backend=backend)
+        try:
+            session = BrowserSession(self.gallery.list(), decision_backend=backend,
+                                     note_memory=self.note_memory, delete_person=self.delete_person,
+                                     on_note_change=self.sync_person_note)
+        except (ValueError, RuntimeError) as exc:
+            if backend is not None:
+                await backend.aclose()
+            raise HTTPException(503, str(exc)) from None
         self.sessions[session.id] = session
         return {"session_id": session.id, "snapshot": session.product.snapshot(),
                 "websocket_url": f"/ws/v1/{session.id}",
                 "limits": {"jpeg_max_bytes": session.clips.max_frame_bytes, "clip_fps": 5,
                            "audio_sample_rate": 16000, "idle_ttl_s": self.idle_ttl}}
+
+    def sync_person_note(self, origin, kind, payload, profile_id):
+        """Person notes are shared across open tabs; capture state and object notes are not."""
+        for session in self.sessions.values():
+            if session is not origin and not session.closed:
+                session.sync_person_note(kind, payload, profile_id)
+
+    def delete_person(self, person_id: str) -> bool:
+        """Remove the enrollment and synchronize every open product session."""
+        ident = text(person_id, "profile_id", 128)
+        for session in self.sessions.values():
+            profile = session.product.profiles.get(ident)
+            if profile is not None and profile["kind"] != "person":
+                raise ValueError("Only people can be deleted")
+        try:
+            deleted = self.gallery.delete(ident)
+        except OSError as exc:
+            raise RuntimeError("Could not save the face gallery; the person was not deleted") from exc
+        # Do this before publishing success. A retry also cleans up notes if a
+        # previous attempt removed the face but the note store was unavailable.
+        if self.note_memory is not None:
+            self.note_memory.delete_profile_notes(ident)
+        for session in self.sessions.values():
+            if not session.closed:
+                session.product.delete_profile(ident, delete_notes=False)
+                session.decision_tokens.clear()
+                session.decision_sources.clear()
+                session.last_decision_state = ""
+        return deleted
 
     async def snapshot(self, session_id: str):
         return self.get(session_id).product.snapshot()

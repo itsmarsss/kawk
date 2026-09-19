@@ -23,12 +23,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from remember_hub.perception.face.baseten_http import FaceRequestTimeout
 
-from .faces import FaceEngine, FaceSession, Gallery, MODEL
-from .speech import METADATA, MODEL_ID, read_key, transcript_event
 from .backends import cloud_face_backend, configured_backends, jpeg_dimensions, selection
 from .experiments import local_speech_socket, objects_socket
+from .faces import MODEL, FaceEngine, FaceSession, Gallery
+from .product_decisions import MODEL as JEV_MODEL
+from .product_decisions import backend_from_environment
+from .product_memory import NoteMemory, memory_path_for_gallery
 from .product_routes import ProductSessions
-from .product_decisions import backend_from_environment, MODEL as JEV_MODEL
+from .speech import METADATA, MODEL_ID, read_key, transcript_event
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -41,6 +43,10 @@ MAX_SESSION_S = 600
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
+    # Open only at startup, using the selected gallery's sibling by default.
+    # An unavailable store must fail startup rather than silently lose notes.
+    product_sessions.note_memory = NoteMemory(memory_path_for_gallery(
+        gallery.path, os.getenv("REMEMBER_MEMORY_PATH")))
     async def preload():
         with contextlib.suppress(Exception):
             await ensure_engine()  # Failure is exposed in /api/status; speech remains usable.
@@ -150,7 +156,7 @@ async def get_gallery():
 
 @app.delete("/api/gallery/{person_id}")
 async def delete_person(person_id: str):
-    if not gallery.delete(person_id):
+    if not product_sessions.delete_person(person_id):
         raise HTTPException(404, "No such enrollment")
     return {"deleted": True}
 

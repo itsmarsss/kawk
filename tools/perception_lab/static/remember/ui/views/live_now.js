@@ -33,19 +33,47 @@ export function effectiveDecisions(live, apiStatus) {
   return { backend: 'rules', phase: 'rules', source: c ? 'configured' : 'default' };
 }
 
-/** Copy for the "Heard" card that follows the effective backend without claiming more than is known. */
-export function heardCopy(decisions, speechOn) {
-  if (!speechOn) return { header: 'Speech stream off', empty: 'Speech stream is off. Type a request below instead.' };
+/** Where person notes end up, from the server's status flag only (never assumed). */
+export function memoryLifetimeCopy(memoryPersistent) {
+  return memoryPersistent === true
+    ? 'Person notes are saved on this Mac and survive reloads, session resets and server restarts.'
+    : 'Notes live only in this temporary session.';
+}
+
+/**
+ * Copy for the "Heard" card that follows the effective backend without claiming more than is known.
+ * `note` explains ambient memory: only the Jev backend can turn ordinary conversation into notes;
+ * rules mode must never claim it.
+ */
+export function heardCopy(decisions, speechOn, memoryPersistent = false) {
+  if (!speechOn) return { header: 'Speech stream off', empty: 'Speech stream is off. Type a request below instead.', note: null };
   if (decisions.backend === 'typesafe') {
     const errorish = decisions.phase === 'error' || decisions.phase === 'backoff' || decisions.phase === 'dropped';
     return {
       header: `Live transcript · finalized speech waits for Jev${decisions.source === 'configured' ? ' (configured, not verified)' : ''}`,
       empty: errorish
-        ? 'Nothing heard yet. Jev is unavailable right now, so finalized speech triggers no actions; there is no rules fallback.'
+        ? 'Nothing heard yet. Jev is unavailable right now, so finalized speech triggers no actions and nothing is remembered; there is no rules fallback.'
         : 'Nothing heard yet. Finalized speech is sent to Jev for a decision; nothing acts until it answers.',
+      note: `Talk naturally: Jev saves useful details from ordinary conversation for the one recognised person in view — no “remember that” needed. ${memoryLifetimeCopy(memoryPersistent)}`,
+      noteTitle: 'Saved notes are quotes of what was heard; the speaker is not identified.',
     };
   }
-  return { header: 'Live transcript · V1 command rules', empty: 'Nothing heard yet. Finals that match the V1 grammar act; everything else is shown as conversation.' };
+  return {
+    header: 'Live transcript · V1 command rules',
+    empty: 'Nothing heard yet. Finals that match the V1 grammar act; everything else is shown as conversation.',
+    note: `Rules mode remembers nothing automatically; notes come from “remember that …” or Add note. ${memoryLifetimeCopy(memoryPersistent)}`,
+    noteTitle: null,
+  };
+}
+
+/** Sidebar footer for Live V1: what decides, and what outlives the session — from status, not assumptions. */
+export function liveFooterCopy(decisions, memoryPersistent) {
+  const lifetime = memoryPersistent === true
+    ? 'Person notes are saved on this Mac; reminders, encounters, clips and object notes are temporary.'
+    : 'Notes, reminders, encounters and clips are temporary; no durable store is reported.';
+  return decisions.backend === 'typesafe'
+    ? `Live V1 with the Jev decision bridge (status above): Jev gates finalized speech and decides which useful personal facts, preferences and plans to remember from conversation. ${lifetime} The production agent harness is deferred. `
+    : `Live V1: real perception and a small command grammar; nothing is remembered automatically in rules mode. ${lifetime} The production agent harness is deferred. `;
 }
 
 export function renderLiveNow(ctx) {
@@ -55,7 +83,8 @@ export function renderLiveNow(ctx) {
   const capturing = Boolean(live?.capturing);
   const connected = live?.session === 'connected';
   const decisions = effectiveDecisions(live, apiStatus);
-  const heard = heardCopy(decisions, Boolean(settings.microphone && settings.speech.enabled));
+  const memoryPersistent = state.status?.memory_persistent === true;
+  const heard = heardCopy(decisions, Boolean(settings.microphone && settings.speech.enabled), memoryPersistent);
 
   return h('div.now-grid',
     h('div.stack',
@@ -68,6 +97,7 @@ export function renderLiveNow(ctx) {
       enrollmentPanel(ctx),
       h('section.card', { 'aria-labelledby': 'heard-h' },
         h('div.section-head', h('h2#heard-h', 'Heard'), h('span.tiny.muted', heard.header)),
+        heard.note ? h('p.tiny.muted', { style: 'margin-bottom:8px', title: heard.noteTitle }, heard.note) : null,
         transcriptList(state.transcript, nowMs, { quiet: Boolean(state.answer.latest || state.answer.pending), emptyText: heard.empty }),
         answerCard(state.answer.latest, state.answer.pending, state, nowMs, { onOpenMoment: actions.openMoment }),
         askForm(ctx)),
@@ -77,9 +107,7 @@ export function renderLiveNow(ctx) {
         h('div.section-head', h('h2#recent-h', 'Recent moments'), h('a.small', { href: '#/moments' }, 'All')),
         recentMoments(state, nowMs, actions)),
       setupPanel(ctx, capturing),
-      h('p.tiny.muted', decisions.backend === 'typesafe'
-        ? 'Live V1 with the optional Jev decision bridge (status above). Notes, reminders, encounters and clips live only in this temporary session; the production agent harness and durable memory are deferred. '
-        : 'Live V1: real perception and a small server-side command grammar. Notes, reminders, encounters and clips live only in this temporary session; the production agent harness and durable memory are deferred. ',
+      h('p.tiny.muted', liveFooterCopy(decisions, memoryPersistent),
         h('a', { href: '#', onClick: (e) => { e.preventDefault(); actions.live.switchMode('demo'); } }, 'Switch to Demo mode')),
       diagnostics(state, live)));
 }
@@ -173,13 +201,13 @@ function enrollLabel(e) {
 function askForm(ctx) {
   const input = h('input#ask-input', { type: 'text', autocomplete: 'off', maxLength: 160, placeholder: 'e.g. “where are my keys?”, “who is this?”, “remind me to ask Bob about dinner”', 'aria-label': 'Typed request (falls back for speech)' });
   return h('div', h('form.ask', { onSubmit: (e) => { e.preventDefault(); const t = input.value.trim(); if (!t) return; ctx.actions.ask(t); input.value = ''; } }, input, h('button.primary', { type: 'submit', disabled: ctx.live?.session !== 'connected' }, 'Ask')),
-    h('p.tiny.muted', { style: 'margin-top:6px' }, 'Typed requests follow a fixed grammar in every mode: “where is/are my …” (observed object categories), “who is this?” (the recognised person in view — their notes and last encounter; unknown faces are never guessed), “remind me to ask Bob about dinner” (uses their enrolled name; the reminder shows next time Bob is recognised), “recall notes about …”, “remember that …”, “I’m …” (introduction), “clear the display”. With the Jev backend configured, only finalized live speech and significance are gated by Jev; typed Ask is not. Not a general assistant.'));
+    h('p.tiny.muted', { style: 'margin-top:6px' }, 'Typed requests follow a fixed grammar in every mode: “where is/are my …” (observed object categories), “who is this?” (the recognised person in view — their notes and last encounter; unknown faces are never guessed), “remind me to ask Bob about dinner” (uses their enrolled name; the reminder shows next time Bob is recognised), “recall notes about …”, “remember that …”, “I’m …” (introduction), “clear the display”. With the Jev backend configured, only finalized live speech and significance are gated by Jev; typed Ask is not, and typed text is never remembered automatically. Not a general assistant.'));
 }
 
 function recentMoments(state, nowMs, actions) {
   const moments = select.moments(state).slice(0, 3);
   if (!moments.length) return h('p.muted.small', 'No moments yet. “Mark moment” saves 5 s before and after now from the real camera buffer.');
-  return h('ul.moment-list', ...moments.map((m) => momentRow(m, nowMs, actions.openMoment)));
+  return h('ul.moment-list', ...moments.map((m) => momentRow(m, nowMs, actions.openMoment, actions.moment?.remove)));
 }
 
 function setupPanel(ctx, capturing) {
@@ -205,7 +233,14 @@ function setupPanel(ctx, capturing) {
       h('div.setup-row', toggle('Objects (needs camera)', settings.objects.enabled, (v) => upd({ objects: { ...settings.objects, enabled: v } })), backendSelect('objects', 'objects', settings.objects.backend), detail('objects', settings.objects.backend)),
       h('div.setup-row', h('label.small.muted', { style: 'flex:1 1 100%' }, 'Object vocabulary (≤ 20, comma-separated)', h('input', { type: 'text', disabled: capturing, value: settings.objects.vocabulary.join(', '), onChange: (e) => upd({ objects: { ...settings.objects, vocabulary: e.target.value.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20) } }) }))),
       h('div.setup-row', toggle('Speech (needs microphone)', settings.speech.enabled, (v) => upd({ speech: { ...settings.speech, enabled: v } })), backendSelect('speech', 'speech', settings.speech.backend), detail('speech', settings.speech.backend)),
-      h('div.row', { style: 'margin-top:8px' }, h('button.small', { type: 'button', disabled: capturing, onClick: actions.live.refreshDevices }, 'Refresh devices'), h('button.small.quiet.danger', { type: 'button', onClick: actions.live.reset }, 'Reset session'), h('span.tiny.muted', 'Reset deletes this temporary session and its clips only. Enrolled faces stay.'))));
+      h('div.row', { style: 'margin-top:8px' }, h('button.small', { type: 'button', disabled: capturing, onClick: actions.live.refreshDevices }, 'Refresh devices'), h('button.small.quiet.danger', { type: 'button', onClick: actions.live.reset }, 'Reset session'), h('span.tiny.muted', resetHint(ctx.state.status?.memory_persistent === true)))));
+}
+
+/** Setup-panel hint next to Reset: what a reset removes, from the server's persistence flag. */
+export function resetHint(memoryPersistent) {
+  return memoryPersistent
+    ? 'Reset deletes this temporary session (clips, reminders, encounters, object notes). Enrolled faces and saved person notes stay.'
+    : 'Reset deletes this temporary session, including its notes and clips. Enrolled faces stay.';
 }
 
 function diagnostics(state, live) {

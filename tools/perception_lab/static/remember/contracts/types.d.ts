@@ -12,8 +12,8 @@ export type ISODateTime = string; // ISO-8601 with timezone, e.g. 2026-09-19T14:
 /**
  * Where a record came from. Demo: 'demo-fixture' | 'introduction'. Live V1: 'live-perception'
  * (real faces/objects/speech percepts) and 'v1-rules' (the server's small command grammar and
- * manual actions — NOT an agent decision). 'live-agent' / 'live-memory' are reserved for the
- * future agent + memory services, which do not exist yet.
+ * manual actions — NOT an agent decision). 'live-agent' marks records a real decision backend
+ * created (Jev moments; automatic conversation notes). 'live-memory' stays reserved.
  */
 export type Source = 'demo-fixture' | 'user' | 'introduction' | 'live-perception' | 'v1-rules' | 'live-agent' | 'live-memory';
 
@@ -25,6 +25,22 @@ export interface Note {
   created_at: ISODateTime;
   updated_at: ISODateTime;
   source: Source;
+  /**
+   * Automatic conversation notes (source 'live-agent'): Jev decided that ordinary speech heard
+   * while exactly one recognised person was in view was worth remembering. The note is bound to
+   * that person as *conversation context*; `speaker` is 'unknown' — a visible face is never
+   * treated as evidence of who spoke. `source_text` is the verbatim final (≤ 1000 chars).
+   * All of these are optional: older payloads and manual notes do not carry them, and the UI
+   * passes them through unchanged on edit (the server then sets `edited_by_user`).
+   */
+  attribution?: 'conversation_context' | string;
+  speaker?: 'unknown' | string;
+  decision_model?: string;          // 'jev-1.13.0'
+  source_segment_id?: string;
+  source_session_id?: string;
+  source_encounter_id?: string;
+  source_text?: string;
+  edited_by_user?: boolean;
 }
 
 export interface Profile {
@@ -150,6 +166,18 @@ export interface TranscriptSegment {
   speaker: 'wearer' | 'other' | 'unknown';
   /** Decided by the provider (the hub's Jev gate later). 'pending' until known. */
   directed: 'pending' | 'device' | 'conversation';
+  /**
+   * Optional: what the ambient memory gate did with this finalized segment. Present only once the
+   * server resolved it; a 'conversation' segment stays a conversation whether or not it was saved.
+   * 'not_saved' is normal (no single recognised person in view, limit reached…) — `reason` explains.
+   */
+  memory?: {
+    state: 'saved' | 'duplicate' | 'not_saved';
+    note_id?: string | null;
+    profile_id?: string;
+    profile_name?: string;
+    reason?: string;
+  };
 }
 
 export type AnswerKind = 'found' | 'not_found' | 'unsupported' | 'ignored';
@@ -194,6 +222,12 @@ export interface ProviderStatus {
   camera: 'simulated' | 'off' | 'live' | 'unknown';
   microphone: 'simulated' | 'off' | 'live' | 'unknown';
   since: ISODateTime;
+  /**
+   * Optional. True only when the server keeps person notes in a durable store on this machine
+   * (linked to the enrolled gallery UUID; survives reload, session reset and server restart).
+   * Absent or false = notes live in the temporary session only. The UI never assumes true.
+   */
+  memory_persistent?: boolean;
 }
 
 /* ------------------------------------------------------------ device display */
@@ -256,6 +290,12 @@ export interface EventMap {
   'provider.status': { status: ProviderStatus };
   'scene.changed': { scene: Scene };
   'profile.upserted': { profile: Profile };
+  /**
+   * A person was deleted (people only). The store removes the profile, its notes, reminders and
+   * encounters, untags it from moments (clips are kept), clears answers/recognition that point at
+   * it, and tombstones the id so late upserts/encounters/notes/reminders cannot resurrect it.
+   */
+  'profile.deleted': { profile_id: string };
   'encounter.started': { encounter: Encounter };
   'encounter.ended': { encounter_id: string; ended_at: ISODateTime };
   'recognition.updated': { recognition: Recognition };
@@ -308,6 +348,13 @@ export interface CommandMap {
   'reminder.snooze': { reminder_id: string; minutes: number };
   'reminder.dismiss': { reminder_id: string; encounter_id: string };
   'moment.delete': { moment_id: string };
+  /**
+   * Delete a person (kind 'person' only). Demo: removes them from this browser's demo data. Live:
+   * removes the saved face-gallery enrollment plus the session profile, notes, reminders and
+   * encounters on the hub for every live session. Saved moments are kept, untagged. Answered by
+   * 'profile.deleted' (or a v1.error, in which case nothing changed).
+   */
+  'profile.delete': { profile_id: string };
   /* Live V1 only (server-side handlers in tools/perception_lab/product.py): */
   'moment.mark': { title?: string; summary?: string; event_at?: ISODateTime; profile_ids?: string[] };
   'display.clear': Record<string, never>;

@@ -36,6 +36,15 @@ export function createDemoProvider(opts = {}) {
   let activeEncounter = null;
   /** Moments still recording → their +5 s timer. Failed if the demo stops before it fires; cancelled on delete. */
   const recording = new Map();
+  /** People deleted in this provider's lifetime. The store's persisted tombstones cover reloads. */
+  const deletedHere = new Set();
+  const isDeleted = (id) => deletedHere.has(id) || Boolean(getState().deleted_profile_ids?.includes(id));
+  /** The live profile for a fixture actor: same id, or a re-created one (actor_key) after a deletion. */
+  const actorProfile = (st, actor) => {
+    const direct = st.profiles?.[actor.id];
+    if (direct && !isDeleted(direct.id)) return direct;
+    return Object.values(st.profiles ?? {}).find((p) => p.actor_key === actor.id && !isDeleted(p.id)) ?? null;
+  };
 
   const status = (state, extra = {}) => ({
     schema_version: SCHEMA_VERSION, provider: 'demo', state,
@@ -130,6 +139,12 @@ export function createDemoProvider(opts = {}) {
       recognition(track, 'person', 'pending', 'Recognising…');
       let encId = null;
       sceneAfter(gen, 900, () => {
+        if (isDeleted(ACTORS.alex.id)) {
+          // Alex was deleted from the demo data: the face is no longer known, so nothing is re-created.
+          recognition(track, 'person', 'unresolved', 'No match in memory. This person was deleted from the demo data; no introduction heard.');
+          sceneAfter(gen, 4_000, () => emit('recognition.cleared', { track_id: track }));
+          return;
+        }
         emit('profile.upserted', { profile: profile(ACTORS.alex, { last_seen_location: ACTORS.alex.location }) });
         encId = startEncounter(ACTORS.alex, ACTORS.alex.location);
         emit('recognition.cleared', { track_id: track });
@@ -166,7 +181,11 @@ export function createDemoProvider(opts = {}) {
     new_introduction(run, gen) {
       const track = `trk_intro_${run}`;
       endActiveEncounter();
-      const known = Boolean(getState().profiles?.[ACTORS.maya.id]);
+      const existing = actorProfile(getState(), ACTORS.maya);
+      const known = Boolean(existing);
+      // A deleted Maya is gone for good; introducing herself again enrols a NEW person (fresh id), as live would.
+      const maya = existing ? { ...ACTORS.maya, id: existing.id } : isDeleted(ACTORS.maya.id) ? { ...ACTORS.maya, id: `${ACTORS.maya.id}_${run}` } : ACTORS.maya;
+      const introNoteId = maya.id === ACTORS.maya.id ? ACTORS.maya.introNoteId : `${ACTORS.maya.introNoteId}_${maya.id}`;
       scene('conversation', 'Sponsor hall. Someone is saying hello.', MEDIA.conversationScene);
       recognition(track, 'person', 'pending', 'Recognising…');
       sceneAfter(gen, 1_200, () => recognition(track, 'person', 'listening', known ? 'Recognised — waiting for them to speak' : 'Someone new. No match in memory — listening for an introduction.'));
@@ -175,10 +194,10 @@ export function createDemoProvider(opts = {}) {
       sceneAfter(gen, 3_200, () => segment(seg, ACTORS.maya.introduction, true, 'other', 'conversation', iso(clock.now() - 1000)));
       sceneAfter(gen, 3_900, () => {
         const now = clock.now();
-        emit('profile.upserted', { profile: profile(ACTORS.maya, { created_at: iso(now), source: 'introduction', last_seen_location: ACTORS.maya.location }) });
-        emit('note.upserted', { note: note({ id: ACTORS.maya.introNoteId, profile_id: ACTORS.maya.id, text: `Introduced themselves: “${ACTORS.maya.introduction}” — ${ACTORS.maya.location}.`, at: iso(now), source: 'introduction' }) });
-        startEncounter(ACTORS.maya, ACTORS.maya.location, 'ok');
-        recognition(track, 'person', 'resolved', known ? 'Recognised: Maya' : 'New profile created from the introduction', { profile_id: ACTORS.maya.id });
+        emit('profile.upserted', { profile: profile(maya, { created_at: iso(now), source: 'introduction', last_seen_location: ACTORS.maya.location, actor_key: ACTORS.maya.id }) });
+        emit('note.upserted', { note: note({ id: introNoteId, profile_id: maya.id, text: `Introduced themselves: “${ACTORS.maya.introduction}” — ${ACTORS.maya.location}.`, at: iso(now), source: 'introduction' }) });
+        startEncounter(maya, ACTORS.maya.location, 'ok');
+        recognition(track, 'person', 'resolved', known ? 'Recognised: Maya' : 'New profile created from the introduction', { profile_id: maya.id });
       });
       sceneAfter(gen, 5_500, () => emit('recognition.cleared', { track_id: track }));
       sceneAfter(gen, 13_000, idle);
@@ -187,7 +206,8 @@ export function createDemoProvider(opts = {}) {
 
     significant_moment(run, gen) {
       scene('conversation', 'Team table, talking with Alex.', MEDIA.conversationScene);
-      if (activeEncounter?.profileId !== ACTORS.alex.id) {
+      const alexKnown = !isDeleted(ACTORS.alex.id);
+      if (alexKnown && activeEncounter?.profileId !== ACTORS.alex.id) {
         emit('profile.upserted', { profile: profile(ACTORS.alex, { last_seen_location: ACTORS.alex.location }) });
         startEncounter(ACTORS.alex, ACTORS.alex.location);
       }
@@ -197,7 +217,7 @@ export function createDemoProvider(opts = {}) {
       const momentId = `moment_pitch_${sessionId}_${run}`;
       sceneAfter(gen, 1_600, () => {
         const eventAt = clock.now();
-        const m = conversationMoment({ id: momentId, eventAtMs: eventAt, location: ACTORS.alex.location, profileIds: [ACTORS.alex.id] });
+        const m = conversationMoment({ id: momentId, eventAtMs: eventAt, location: ACTORS.alex.location, profileIds: alexKnown ? [ACTORS.alex.id] : [] });
         record(momentId, m, (savedAt) => ({ ...m, status: 'saved', saved_at: iso(savedAt), clip: conversationClip(eventAt, `${momentId}_clip`) }));
       });
       sceneAfter(gen, 12_000, idle);
@@ -254,7 +274,7 @@ export function createDemoProvider(opts = {}) {
         result = { kind: 'not_found', text: `I haven’t seen your ${thing}.`, context: ['Only the keys are in demo memory.'] };
       } else if (/\b(alex|maya)\b/.test(q) || /who (is|was|did)/.test(q)) {
         const key = /maya/.test(q) ? 'maya' : 'alex';
-        const person = st.profiles?.[ACTORS[key].id];
+        const person = actorProfile(st, ACTORS[key]);
         if (person) {
           const reminders = Object.values(st.reminders ?? {}).filter((r) => r.profile_id === person.id && r.status === 'active');
           result = {
@@ -299,6 +319,16 @@ export function createDemoProvider(opts = {}) {
       const timer = recording.get(moment_id);
       if (timer !== undefined) { clock.clearTimeout(timer); timers.delete(timer); recording.delete(moment_id); }
       emit('moment.deleted', { moment_id });
+    },
+    /** People only. The store cascades (notes, reminders, encounters, moment tags) and tombstones the id. */
+    'profile.delete': ({ profile_id }) => {
+      const id = typeof profile_id === 'string' ? profile_id : '';
+      const p = id ? getState().profiles?.[id] : null;
+      if (!p || isDeleted(id)) throw new Error('That person is not in the demo data');
+      if (p.kind !== 'person') throw new Error('Only people can be deleted; things are tracked automatically');
+      deletedHere.add(id);
+      if (activeEncounter?.profileId === id) activeEncounter = null; // the encounter goes with the person; no encounter.ended for a removed row
+      emit('profile.deleted', { profile_id: id });
     },
   };
 

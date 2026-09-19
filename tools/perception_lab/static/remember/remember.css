@@ -113,6 +113,7 @@ main { flex: 1 1 auto; width: 100%; max-width: var(--maxw); margin: 0 auto; padd
 .profile-card h2 { font-size: 1.25rem; }
 .profile-card .descriptor { color: var(--muted); }
 .profile-card .meta { margin-top: 6px; color: var(--muted); font-size: 0.9rem; }
+.profile-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .notes { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 .notes li { padding: 4px 0; display: flex; gap: 10px; align-items: baseline; }
 .notes li .when { color: var(--faint); font-size: 0.78rem; flex: none; min-width: 5.5em; }
@@ -120,14 +121,19 @@ main { flex: 1 1 auto; width: 100%; max-width: var(--maxw); margin: 0 auto; padd
 
 /* Speech */
 .transcript { display: flex; flex-direction: column; gap: 6px; min-height: 40px; }
-.transcript li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+/* Rows wrap: the text keeps a readable minimum and the tags (up to two) drop to their own line
+   when a narrow viewport or a long profile name would otherwise push them outside the card. */
+.transcript li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
 .transcript li:last-child { border-bottom: 0; }
 .transcript .speaker { flex: none; width: 5em; color: var(--faint); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; padding-top: 2px; }
-.transcript .text { flex: 1 1 auto; }
+.transcript .text { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
 .transcript li.partial .text { color: var(--muted); font-style: italic; }
-.tag { flex: none; font-size: 0.72rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); white-space: nowrap; }
+.transcript .tag { max-width: 100%; }
+.tag { flex: none; font-size: 0.72rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tag.device { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
 .tag.partial { border-style: dashed; }
+/* Ambient memory outcome on a conversation line: distinct from "For Remember" (no filled background). */
+.tag.saved { border-color: var(--accent-ink); color: var(--accent-ink); font-weight: 600; }
 .ask { display: flex; gap: 8px; margin-top: 12px; }
 .ask input { flex: 1 1 auto; min-width: 0; font: inherit; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); }
 .ask input::placeholder { color: var(--faint); }
@@ -146,15 +152,20 @@ main { flex: 1 1 auto; width: 100%; max-width: var(--maxw); margin: 0 auto; padd
 .moment-list img, .thumb { width: 64px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); }
 .moment-list .title { font-weight: 600; }
 .moment-list .when { color: var(--muted); font-size: 0.85rem; }
-.moment-list button.open { all: unset; cursor: pointer; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; width: 100%; }
+/* A row is the open button plus a sibling Delete; interactive elements are never nested. */
+.moment-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.moment-list button.open { all: unset; cursor: pointer; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; width: 100%; min-width: 0; }
 .moment-list button.open:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.moment-list .moment-delete { flex: none; }
 .moment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-.moment-tile { all: unset; cursor: pointer; display: block; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.moment-tile { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .moment-tile:hover { border-color: var(--line-strong); }
-.moment-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.moment-tile button.open { all: unset; cursor: pointer; display: block; width: 100%; text-align: left; }
+.moment-tile button.open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .moment-tile img, .moment-tile .noposter { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: var(--raised); display: grid; place-items: center; color: var(--faint); }
 .moment-tile .body { padding: 10px 12px 12px; }
 .moment-tile .body .when { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
+.moment-tile .tile-actions { display: flex; justify-content: flex-end; padding: 0 8px 8px; margin-top: auto; }
 .rec { display: flex; flex-direction: column; gap: 6px; }
 .rec .bar { position: relative; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .rec .bar .pre { position: absolute; left: 0; top: 0; bottom: 0; width: 50%; background: var(--line-strong); }
@@ -168,6 +179,8 @@ main { flex: 1 1 auto; width: 100%; max-width: var(--maxw); margin: 0 auto; padd
 
 /* Lists (people, things, reminders) */
 .list-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.list-row.has-actions { grid-template-columns: 44px minmax(0, 1fr) auto auto; }
+.list-row .row-action { flex: none; }
 .list-row:last-child { border-bottom: 0; }
 .list-row .avatar { width: 44px; height: 44px; font-size: 1rem; }
 .list-row .name { font-weight: 600; }
@@ -235,8 +248,11 @@ dialog textarea { min-height: 84px; resize: vertical; }
   .profile-card h2 { font-size: 1.15rem; }
   .reminder-row { grid-template-columns: 1fr; }
   .reminder-row .actions { justify-content: flex-start; }
-  .list-row { grid-template-columns: 44px minmax(0, 1fr); }
+  .list-row, .list-row.has-actions { grid-template-columns: 44px minmax(0, 1fr); }
   .list-row .trail { grid-column: 2; }
+  .list-row .row-action { grid-column: 2; justify-self: start; }
+  .moment-list li { grid-template-columns: minmax(0, 1fr); }
+  .moment-list .moment-delete { justify-self: start; margin-left: 76px; }
   .answer .clip { grid-template-columns: 96px minmax(0, 1fr); }
   dialog .dlg-actions .left { margin-right: 0; flex: 1 1 100%; }
 }

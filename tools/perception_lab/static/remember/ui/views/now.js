@@ -49,7 +49,7 @@ function askForm(ctx) {
 function recentMoments(state, nowMs, actions) {
   const moments = select.moments(state).slice(0, 3);
   if (!moments.length) return h('p.muted.small', 'No moments yet.');
-  return h('ul.moment-list', ...moments.map((m) => momentRow(m, nowMs, actions.openMoment)));
+  return h('ul.moment-list', ...moments.map((m) => momentRow(m, nowMs, actions.openMoment, actions.moment?.remove)));
 }
 
 function demoPanel(ctx) {

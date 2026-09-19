@@ -15,7 +15,7 @@
       "type": "string",
       "enum": [
         "session.started", "session.stopped", "provider.status", "scene.changed",
-        "profile.upserted", "encounter.started", "encounter.ended",
+        "profile.upserted", "profile.deleted", "encounter.started", "encounter.ended",
         "recognition.updated", "recognition.cleared",
         "note.upserted", "note.deleted",
         "reminder.upserted", "reminder.deleted",

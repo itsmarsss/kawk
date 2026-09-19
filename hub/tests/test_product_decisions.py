@@ -31,9 +31,9 @@ class Response:
 
 
 class Transport:
-    def __init__(self, *, directed=.9, significant=.1, intent="find", introduction=.1):
+    def __init__(self, *, directed=.9, significant=.1, intent="find", introduction=.1, remember=.1):
         self.probabilities = {"addressed": directed, "significant": significant,
-                              "allow_introduction": introduction}
+                              "allow_introduction": introduction, "remember_conversation": remember}
         self.intent = intent
         self.calls = []
         self.entered = asyncio.Event()
@@ -117,7 +117,7 @@ async def test_denied_directedness_is_reported_without_pretending_command_execut
     assert statuses[-1]["state"] == "ready"
     body = transport.calls[0]
     assert body["model"] == MODEL
-    assert set(body["questions"]) == {"addressed", "intent", "allow_introduction", "significant"}
+    assert set(body["questions"]) == {"addressed", "intent", "allow_introduction", "remember_conversation", "significant"}
     assert 'LATEST_FINAL_SPEECH: "Where are my keys?"' in body["state"]
     assert set(body) == {"model", "state", "questions"}  # No images or embeddings.
     await bridge.aclose()

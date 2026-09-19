@@ -7,9 +7,13 @@ footer (a switch reloads the page so the two never share a store):
   side. One browser media acquisition feeds the existing perception sockets (`/ws/faces`,
   `/ws/objects`, `/ws/speech`) and a temporary server clip buffer. The server's V1 engine
   (`tools/perception_lab/product.py`, root-owned) turns percepts and a *small command grammar*
-  into versioned state events and display actions. **There is no agent and no durable memory**:
-  notes, reminders, encounters and clips live only in a temporary session; only the explicitly
-  enrolled face gallery is durable.
+  into versioned state events and display actions. With the optional Jev backend the server also
+  runs an **ambient memory gate**: Jev decides which useful facts, preferences, plans or topics
+  from ordinary conversation become notes for the one recognised person in view (no "remember
+  that" needed). Reminders, encounters, clips and object notes live only in a temporary session;
+  **person notes are durable only when the server's status reports `memory_persistent: true`**
+  (a SQLite store next to the gallery, keyed by the enrolled gallery UUID). The enrolled face
+  gallery is always durable.
 - **Demo.** Scripted fixture scenes for development (`providers/demo_provider.js`). Nothing in it
   performs inference. Its data lives in `localStorage['remember.ui.v1.demo']` and is never used
   as a fallback for live.
@@ -21,7 +25,7 @@ The component lab stays at `/lab`, `/faces`, `/objects`, `/speech`, `/devices`.
 ```sh
 make serve-product-ui           # uvicorn on 0.0.0.0:8081 (PORT overrides)
 open http://127.0.0.1:8081/     # Live V1 home; footer → "Demo mode" / "Testing lab"
-node tools/perception_lab/static/remember/tests/run.mjs   # 654 checks, no dependencies
+node tools/perception_lab/static/remember/tests/run.mjs   # 944 checks, no dependencies (also: make test-ui)
 ```
 
 **Explicit Start.** Nothing is captured on load. Press **Start** on Now; the browser asks for
@@ -64,6 +68,23 @@ disable camera or microphone independently, and choose backends (defaults: local
    while Bob is in view is suppressed for the current encounter and shows above his profile
    (web card and device display) the next time he is recognised. Manual create/edit on the
    Reminders page is unchanged.
+3b. **Ambient memory (Jev backend only).** Every finalized speech segment reaches Jev, which
+   decides independently of addressedness whether the ordinary conversation is worth keeping.
+   When it is, and exactly one recognised person has been in view unchanged since the words were
+   heard, the server saves a note for that person and the transcript line gets a second tag
+   beside its directed tag (*Conversation* or *For Remember* — the memory gate is independent of
+   addressedness, so a device-classified sentence with no supported command can still be saved):
+   **Saved to Bob** (`memory.state: 'saved'`), **Already remembered** (`duplicate`), or nothing
+   extra for `not_saved` (the reason is in the tag's title; this is normal, not an error). Being
+   saved never turns a conversation into a command.
+   The note is filed as **conversation context**: its text is a verbatim quote of what was heard
+   (≤ 1000 chars, `source_text`), `speaker` is `unknown`, and the UI labels it *Heard with Bob ·
+   saved automatically* (exact model and the speaker caveat in the title) — never "Bob said". Edit and Delete work
+   as for any note; an edit re-sends the whole record so provenance is preserved, the server adds
+   `edited_by_user: true`, and the original quote is shown under the edited text. The Heard card,
+   the sidebar footer and the Reset hint state this only when the effective backend is Jev;
+   **rules mode says explicitly that nothing is remembered automatically.** Typed Ask is never
+   remembered automatically in either mode.
 4. **Introduce someone.** With exactly one stable unknown face in view, say "Hi, I'm …" (speech
    stream on) or type the name and press **Introduce**. The engine sends a `v1.control enroll`
    with the bound `target_track_id`; the UI forwards it only to the *current* faces socket. States
@@ -84,8 +105,9 @@ disable camera or microphone independently, and choose backends (defaults: local
    server is told both sides are off; Start works again. The control connection and session
    stay, so notes/reminders/recall keep working and saved clips stay playable.
 7. **Reset session** deletes the temporary session and its clips on the server (`DELETE`). It
-   never touches the face gallery. Reload resumes the same session from per-tab
-   `sessionStorage`; a 404 creates a new one.
+   never touches the face gallery, and when `memory_persistent` is true it never touches saved
+   person notes either (the confirm dialog and the Setup hint say which it is). Reload resumes
+   the same session from per-tab `sessionStorage`; a 404 creates a new one.
 
 ### Honest limits of V1
 
@@ -95,7 +117,12 @@ disable camera or microphone independently, and choose backends (defaults: local
   never a guess for an unknown face — `remind me to <verb> <Enrolled Name> about <topic>`,
   `recall notes about …`, `remember that …`, `I'm …`, `clear the display`); everything else is
   shown as conversation. The same grammar applies to the typed Ask box. With the Jev backend,
-  finalized speech waits for Jev's decision and a Jev error produces no fallback action.
+  finalized speech waits for Jev's decision and a Jev error produces no fallback action (and
+  nothing is remembered while Jev is unavailable).
+- Automatic notes bind conversation *context*, not a speaker: a visible face is never treated as
+  evidence of who spoke, and the UI copy never claims voice identification. The gate needs exactly
+  one recognised person in view, unchanged from the moment the words were heard; two faces, an
+  unknown face, or a person who arrived after the speech all yield `not_saved`.
 - Clips come from two sources only: the manual **Mark moment** button, and one limited V1 rule in
   `product.py`: when an object category that was observed repeatedly disappears and its
   disappearance is confirmed, the engine saves a clip around its last observation (a
@@ -204,10 +231,19 @@ Example envelope from the server:
 ## Contracts (schema_version 1.0)
 
 Normative: `contracts/types.d.ts`; runtime checks: `contracts/envelope.js`. Additions for V1:
-sources `live-perception` and `v1-rules` (`live-agent`/`live-memory` reserved, unused);
+sources `live-perception` and `v1-rules` (`live-agent` = records a real decision backend
+created; `live-memory` reserved);
 `display.updated {action: DisplayAction}` and `enrollment.updated {enrollment}` events;
 `Clip.audio {present, coverage: complete|partial|none, captured_duration_s}`; `Snapshot.display`.
 `ProviderStatus.camera/microphone` may be `unknown` (a socket is not capture).
+
+Ambient-memory additions, all **optional** so every older payload still validates:
+`TranscriptSegment.memory {state: saved|duplicate|not_saved, note_id?, profile_id?,
+profile_name?, reason?}` (a malformed `memory` rejects the segment; absence is fine);
+`Note.attribution`, `speaker`, `decision_model`, `source_segment_id`, `source_session_id`,
+`source_encounter_id`, `source_text` (≤ 1000), `edited_by_user` (boolean) — validators check
+types but never strip fields, so provenance survives snapshot → store → restore → edit;
+`ProviderStatus.memory_persistent` (boolean; absent means false and the UI says "temporary").
 
 Validation gates in order (`store.apply`): shape → duplicate `event_id` → session binding →
 `seq` monotonic → content staleness (obsolete answers, older revisions, moment status
@@ -262,7 +298,8 @@ or shows error/backoff with the server's reason. Leave the variables unset for `
 | Data | Where | Lifetime |
 |---|---|---|
 | Face gallery (names + embeddings) | server `data/gallery.npz` | durable; only explicit enrolment adds, only the lab deletes |
-| Live session notes/reminders/encounters/moments/clips | server `BrowserSession` (memory + temp files) | until Reset, or 15 min idle server TTL |
+| Person notes (manual and automatic) when `status.memory_persistent` is true | server SQLite next to the gallery (`product_memory.py`), keyed by gallery UUID | durable: survives reload, Reset session and server restart; Delete removes it |
+| Live session reminders/encounters/moments/clips/object notes (and all notes when `memory_persistent` is false) | server `BrowserSession` (memory + temp files) | until Reset, or 15 min idle server TTL |
 | Live UI state | in-memory store; `sessionStorage['remember.ui.v1.live.session']` per tab | tab lifetime |
 | Live settings (devices, toggles, backends) | `localStorage['remember.ui.v1.live.settings']` | until cleared |
 | Demo data | `localStorage['remember.ui.v1.demo']` | until Reset demo |
@@ -277,21 +314,29 @@ or shows error/backoff with the server's reason. Leave the variables unset for `
   coasting/ending timings, the disappeared-object clip rule, reminder surfacing, display
   priority/TTL — deterministic V1 rules in `product.py`.
 - **Simulated (Demo mode only):** every scene, transcript, answer and clip.
-- **Code-ready, not live-tested: the optional Jev decision bridge.** The server can run
+- **Live-tested in a bounded fixture run: the optional Jev decision bridge.** The server can run
   `REMEMBER_V1_DECISIONS=typesafe`; then finalized live speech and significance are gated by Jev
-  (`jev-1.13.0`) while typed Ask keeps the fixed grammar. No key is configured in this
-  workspace, so it has not been verified live here; the UI shows exactly the status the server
-  reports and never claims verification. In `rules` mode (default) the fixed commands and the
+  (`jev-1.13.0`) while typed Ask keeps the fixed grammar. A private server-side key was used
+  on September 19 for actual hosted Jev tests with synthetic identity/transcript inputs;
+  this is not a real-world speech or recognition accuracy benchmark. The UI follows current
+  server status rather than treating configuration as proof of service health.
+  In `rules` mode (default) the fixed commands and the
   disappeared-object clip rule apply. Moments created by a real decision backend carry
-  `source: 'live-agent'` and `decision_model: 'jev-1.13.0'`.
-- **Pending (not implemented anywhere):** device-directedness beyond that gate, durable
-  memory/notes across sessions, hardware DeviceLink to real glasses. When
-  they arrive they replace `product.py`'s rules behind the same envelopes and commands; the UI
-  needs no change beyond the `live-agent`/`live-memory` source labels.
+  `source: 'live-agent'` and `decision_model: 'jev-1.13.0'`; so do automatic conversation
+  notes (plus `attribution: 'conversation_context'`, `speaker: 'unknown'`, `source_text`).
+  The ambient-memory check covered 12 expected persistence outcomes plus four held-out
+  statements (19 provider calls): useful details saved, filler/repeats skipped, and host
+  identity guards prevented ambiguous assignments. One no-person case received a positive
+  model memory vote; the host correctly blocked it. Persisted notes survived an actual
+  staging-server restart; edit/delete and fresh-session retrieval were browser-verified.
+- **Pending (not implemented anywhere):** device-directedness beyond that gate, hardware
+  DeviceLink to real glasses, any memory beyond person notes (reminders, encounters, clips and
+  object notes are still session-temporary). When they arrive they replace `product.py`'s rules
+  behind the same envelopes and commands.
 
 ## Tests
 
-`node tools/perception_lab/static/remember/tests/run.mjs` — 654 checks: contract validation
+`node tools/perception_lab/static/remember/tests/run.mjs` (or `make test-ui`) — 944 checks: contract validation
 (incl. `display.updated`, `enrollment.updated`, clip audio coverage, snapshot display), store
 ordering/session binding, demo scenes, generic live adapter, **capture lifecycle** (separate
 camera/mic acquisition, chunk timestamps, stop releases, one-in-flight, watchdogs, stale
@@ -306,5 +351,12 @@ capture.status ack / on connection loss with no late restart**, Start after canc
 status ignored, **track ended → bounded stop and Start again**, **decision status: accept /
 ignore unknown / update / clear on socket replacement, Stop and Reset / never enters the store**),
 and **decision status rendering** (rules default, configured-not-verified label, runtime status
-precedence, error and backoff styling with retry and reconfiguration hints). Browser end-to-end is run by root; a fake-device Playwright pass was used for targeted
+precedence, error and backoff styling with retry and reconfiguration hints), and **ambient
+memory** (`tests/memory_render_test.mjs`: optional `segment.memory` / note provenance /
+`memory_persistent` validate while old payloads still pass and malformed values are rejected;
+provenance survives snapshot, store, restore and the edit payload; *Saved to Bob* / *Already
+remembered* / plain *Conversation* tags with the not-saved reason in the title and never *For
+Remember*; profile-page provenance labels, edited quote, Edit/Delete kept, hostile text rendered
+as plain text; Heard/footer/reset copy claims automatic memory only for the Jev backend and
+durability only when the flag is true). Browser end-to-end is run by root; a fake-device Playwright pass was used for targeted
 verification during development.

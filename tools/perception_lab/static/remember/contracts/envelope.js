@@ -16,6 +16,8 @@ export const ENUMS = {
   provenance: ['demo-fixture', 'live-ring-buffer'],
   speaker: ['wearer', 'other', 'unknown'],
   directed: ['pending', 'device', 'conversation'],
+  /** Optional outcome of the ambient (Jev) memory decision on a finalized conversation segment. */
+  memoryState: ['saved', 'duplicate', 'not_saved'],
   answerKind: ['found', 'not_found', 'unsupported', 'ignored'],
   recognitionState: ['pending', 'listening', 'resolved', 'unresolved'],
   sceneKind: ['idle', 'person', 'object', 'conversation'],
@@ -35,6 +37,7 @@ const optStr = (v) => v === undefined || v === null || typeof v === 'string';
 const date = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
 const optDate = (v) => v === undefined || v === null || date(v);
 const bool = (v) => typeof v === 'boolean';
+const optBool = (v) => v === undefined || v === null || typeof v === 'boolean';
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const oneOf = (list) => (v) => list.includes(v);
 const optOneOf = (list) => (v) => v === undefined || v === null || list.includes(v);
@@ -63,10 +66,21 @@ function shape(spec) {
 
 /* ------------------------------------------------------------- records */
 
+/**
+ * `TranscriptSegment.memory` (optional): what the ambient memory gate did with a finalized
+ * conversation segment. Absent on every older payload and on partials/pending segments.
+ */
+const memoryOutcome = (v, path) => (v === undefined || v === null ? null
+  : shape({ state: oneOf(ENUMS.memoryState), note_id: optStr, profile_id: optStr, profile_name: optStr, reason: optStr })(v, path));
+
 export const validators = {
   profile: shape({ id: str, kind: oneOf(ENUMS.kind), name: str, descriptor: optStr, created_at: date, last_seen_at: optDate, last_seen_location: optStr, last_moment_id: optStr, source: oneOf(ENUMS.source), actor_key: optStr }),
   encounter: shape({ id: str, profile_id: str, started_at: date, ended_at: optDate, location: optStr, confidence: oneOf(ENUMS.confidence), source: oneOf(ENUMS.source) }),
-  note: shape({ id: str, profile_id: str, text: str, created_at: date, updated_at: date, source: oneOf(ENUMS.source) }),
+  // Provenance fields are optional (older payloads lack them) and are carried through untouched:
+  // shape() never strips unknown keys, so an automatic note keeps its origin across store/restore/edit.
+  note: shape({ id: str, profile_id: str, text: str, created_at: date, updated_at: date, source: oneOf(ENUMS.source),
+    attribution: optStr, speaker: optStr, decision_model: optStr, source_segment_id: optStr, source_session_id: optStr, source_encounter_id: optStr,
+    source_text: (t) => t === undefined || t === null || (typeof t === 'string' && t.length <= 1000), edited_by_user: optBool }),
   reminder: shape({ id: str, profile_id: str, text: str, status: oneOf(ENUMS.reminderStatus), created_at: date, updated_at: date, snoozed_until: optDate, dismissed_for_encounter_id: optStr, completed_at: optDate, last_shown_at: optDate, source: oneOf(ENUMS.source) }),
   clip: (v, path) => {
     const r = shape({ id: str, url: (u) => isSameOriginUrl(u), poster_url: (u) => u === undefined || u === null || isSameOriginUrl(u), mime: oneOf(['video/mp4']), requested_start_at: date, requested_end_at: date, start_at: date, end_at: date, duration_s: num, coverage: oneOf(ENUMS.coverage),
@@ -89,11 +103,11 @@ export const validators = {
     if (v.clip !== null && v.clip !== undefined) return `${path}.clip must be null unless saved`;
     return null;
   },
-  segment: shape({ id: str, text: (t) => typeof t === 'string', is_final: bool, started_at: date, updated_at: date, speaker: oneOf(ENUMS.speaker), directed: oneOf(ENUMS.directed) }),
+  segment: shape({ id: str, text: (t) => typeof t === 'string', is_final: bool, started_at: date, updated_at: date, speaker: oneOf(ENUMS.speaker), directed: oneOf(ENUMS.directed), memory: memoryOutcome }),
   answer: shape({ query_id: str, question: str, kind: oneOf(ENUMS.answerKind), text: str, context: (c) => c === undefined || strArray(c), profile_id: optStr, moment_id: optStr, answered_at: date }),
   recognition: shape({ track_id: str, kind: oneOf(ENUMS.kind), state: oneOf(ENUMS.recognitionState), label: str, started_at: date, profile_id: optStr }),
   scene: shape({ kind: oneOf(ENUMS.sceneKind), caption: str, illustration_url: (u) => u === undefined || u === null || isSameOriginUrl(u) }),
-  status: shape({ provider: oneOf(ENUMS.providerKind), state: oneOf(ENUMS.providerState), label: str, message: optStr, session_id: str, camera: oneOf(ENUMS.capture), microphone: oneOf(ENUMS.capture), since: date }),
+  status: shape({ provider: oneOf(ENUMS.providerKind), state: oneOf(ENUMS.providerState), label: str, message: optStr, session_id: str, camera: oneOf(ENUMS.capture), microphone: oneOf(ENUMS.capture), since: date, memory_persistent: optBool }),
   displayAction: (v, path) => {
     const r = shape({
       id: str, display: shape({ w: (n) => num(n) && n > 0 && n <= 4096, h: (n) => num(n) && n > 0 && n <= 4096 }),
@@ -115,6 +129,7 @@ const PAYLOADS = {
   'provider.status': { status: validators.status },
   'scene.changed': { scene: validators.scene },
   'profile.upserted': { profile: validators.profile },
+  'profile.deleted': { profile_id: str },            // person removed everywhere; the store cascades + tombstones the id
   'encounter.started': { encounter: validators.encounter },
   'encounter.ended': { encounter_id: str, ended_at: date },
   'recognition.updated': { recognition: validators.recognition },

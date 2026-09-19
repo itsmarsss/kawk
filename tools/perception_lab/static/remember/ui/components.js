@@ -50,7 +50,7 @@ export function profileCard(profile, notes, nowMs, { link = true, encounter, pre
       h('div.row.spread', h('h2', profile.name), inView ? h('span.tag.device', encounter.location && !/^in view$/i.test(encounter.location.trim()) ? `In view · ${encounter.location}` : 'In view') : null),
       profile.descriptor ? h('p.descriptor', profile.descriptor) : null,
       h('p.meta', lastLine),
-      notes.length ? h('ul.notes', { 'aria-label': 'Notes' }, ...notes.slice(0, 3).map((n) => h('li', h('span.when', dayOf(n.created_at, nowMs)), h('span', n.text)))) : h('p.notes.muted.small', 'No notes yet.'),
+      notes.length ? h('ul.notes', { 'aria-label': 'Notes' }, ...notes.slice(0, 3).map((n) => h('li', h('span.when', dayOf(n.created_at, nowMs)), h('span', n.text, isConversationNote(n) ? h('span.tiny.muted', { title: noteProvenanceDetail(n) }, ' · saved automatically') : null)))) : h('p.notes.muted.small', 'No notes yet.'),
       link ? h('p.small', { style: 'margin-top:10px' }, h('a', { href: `#/${isPerson ? 'people' : 'things'}/${encodeURIComponent(profile.id)}` }, notes.length > 3 ? `Open profile · ${notes.length} notes` : 'Open profile')) : null));
 }
 
@@ -70,9 +70,67 @@ export function transcriptList(segments, nowMs, { quiet = false, emptyText = 'No
 }
 function directedTag(s) {
   if (!s.is_final) return h('span.tag.partial', 'Partial');
-  if (s.directed === 'device') return h('span.tag.device', 'For Remember');
-  if (s.directed === 'conversation') return h('span.tag', 'Conversation');
+  // The ambient memory gate is independent of addressedness: any finalized segment may carry an
+  // outcome, so the memory tag is a second, separate tag next to whichever directed tag applies.
+  // It says a note was kept (or already existed), never that the speech became a command.
+  const m = s.memory && typeof s.memory === 'object' ? s.memory : null;
+  const notSaved = m?.state === 'not_saved' && typeof m.reason === 'string' && m.reason ? `Not remembered: ${m.reason}` : null;
+  if (s.directed === 'device') return [h('span.tag.device', { title: notSaved }, 'For Remember'), memoryTag(m)];
+  if (s.directed === 'conversation') return [h('span.tag', { title: notSaved }, 'Conversation'), memoryTag(m)];
   return h('span.tag', 'Deciding…');
+}
+
+/** Ambient memory outcome on a finalized segment → compact tag, or null when there is nothing to say. */
+export function memoryTag(memory) {
+  if (!memory || typeof memory !== 'object') return null;
+  const who = typeof memory.profile_name === 'string' && memory.profile_name.trim() ? memory.profile_name.trim() : null;
+  if (memory.state === 'saved') {
+    return h('span.tag.saved', { title: `Saved automatically by Jev as a quote heard${who ? ` with ${who}` : ''}; it does not say who spoke.` }, who ? `Saved to ${who}` : 'Saved');
+  }
+  if (memory.state === 'duplicate') return h('span.tag', { title: `${who ? `${who}’s` : 'The'} notes already hold this.` }, 'Already remembered');
+  return null;
+}
+
+/* ------------------------------------------------------------- note provenance */
+
+/** True for a note the decision backend saved from ordinary conversation (not a typed or spoken "remember that"). */
+export function isConversationNote(note) {
+  return Boolean(note) && note.source === 'live-agent' && note.attribution === 'conversation_context';
+}
+
+/**
+ * Short visible provenance for an automatic note: "Heard with Bob · saved automatically" (+ "edited
+ * by you"). It is heard *with* the person; it never claims the person said it.
+ */
+export function noteProvenanceText(note, profileName) {
+  if (!isConversationNote(note)) return '';
+  const who = typeof profileName === 'string' && profileName.trim() ? profileName.trim() : null;
+  const parts = [who ? `Heard with ${who}` : 'From conversation', 'saved automatically'];
+  if (note.edited_by_user === true) parts.push('edited by you');
+  return parts.join(' · ');
+}
+
+/** Detail for a title/tooltip: exact model and the speaker caveat, kept out of the visible row. */
+export function noteProvenanceDetail(note) {
+  if (!isConversationNote(note)) return '';
+  const model = typeof note.decision_model === 'string' && note.decision_model ? note.decision_model : 'Jev';
+  return `Decided by ${model}. Quote of what was heard; the speaker is not identified.`;
+}
+
+/** The verbatim final that Jev saw, when it still adds something (the note was edited away from it). */
+export function noteSourceQuote(note) {
+  if (!isConversationNote(note) || typeof note.source_text !== 'string' || !note.source_text) return null;
+  return note.source_text === note.text ? null : note.source_text;
+}
+
+/**
+ * Where a note lives, for dialogs and section hints. Only a status that says `memory_persistent:
+ * true` may claim durability, and only for a person (object notes are always session-temporary).
+ */
+export function noteStorageNote(status, profile, { demo = false } = {}) {
+  if (demo) return 'Kept in this browser’s demo data.';
+  if (status?.memory_persistent === true && profile?.kind === 'person') return `Saved on this Mac with ${profile.name}’s enrolled face; it stays across reloads, session resets and server restarts.`;
+  return 'Kept in this temporary server session only; a session reset or server restart removes it.';
 }
 
 export function answerCard(answer, pending, state, nowMs, { onOpenMoment } = {}) {
@@ -107,20 +165,31 @@ export function momentStatus(moment) {
   return h('span.status-pill', { class: moment.status }, moment.status === 'saved' ? 'Saved' : moment.status === 'recording' ? 'Recording' : 'Not saved');
 }
 
-export function momentRow(moment, nowMs, onOpen) {
+/** Standalone Delete control for a moment; sits NEXT TO the open button, never inside it. */
+export function momentDeleteButton(moment, onDelete, extraClass = '') {
+  if (!onDelete) return null;
+  return h('button.small.quiet.danger.moment-delete', { type: 'button', class: extraClass, 'aria-label': `Delete moment: ${moment.title}`, onClick: () => onDelete(moment) }, 'Delete');
+}
+
+/** List row: open button + optional delete (recording / failed / saved alike, no need to find the player). */
+export function momentRow(moment, nowMs, onOpen, onDelete = null) {
   return h('li',
     h('button.open', { type: 'button', onClick: () => onOpen(moment), 'aria-label': `${moment.title}, ${moment.status}` },
       moment.clip?.poster_url ? h('img', { src: moment.clip.poster_url, alt: '' }) : h('div.thumb', { 'aria-hidden': 'true' }),
       h('div', h('div.row.spread', h('span.title', moment.title), momentStatus(moment)),
-        moment.status === 'recording' ? recordingProgress(moment, nowMs) : h('div.when', when(moment.event_at, nowMs), moment.location ? ` · ${moment.location}` : ''))));
+        moment.status === 'recording' ? recordingProgress(moment, nowMs) : h('div.when', when(moment.event_at, nowMs), moment.location ? ` · ${moment.location}` : ''))),
+    momentDeleteButton(moment, onDelete));
 }
 
-export function momentTile(moment, nowMs, onOpen, profiles) {
+/** Grid tile: the tile is an <article>; its open button and its Delete button are siblings. */
+export function momentTile(moment, nowMs, onOpen, profiles, onDelete = null) {
   const who = (moment.profile_ids ?? []).map((id) => profiles[id]?.name).filter(Boolean).join(', ');
-  return h('button.moment-tile', { type: 'button', onClick: () => onOpen(moment), 'aria-label': `${moment.title}, ${moment.status}` },
-    moment.clip?.poster_url ? h('img', { src: moment.clip.poster_url, alt: '' }) : h('div.noposter', moment.status === 'recording' ? 'Recording…' : 'No clip'),
-    h('div.body', h('div.row.spread', h('strong', moment.title), momentStatus(moment)),
-      moment.status === 'recording' ? recordingProgress(moment, nowMs) : h('p.when', when(moment.event_at, nowMs), who ? ` · ${who}` : '')));
+  return h('article.moment-tile', { 'aria-label': moment.title },
+    h('button.open', { type: 'button', onClick: () => onOpen(moment), 'aria-label': `${moment.title}, ${moment.status}` },
+      moment.clip?.poster_url ? h('img', { src: moment.clip.poster_url, alt: '' }) : h('div.noposter', moment.status === 'recording' ? 'Recording…' : moment.status === 'failed' ? 'Not saved' : 'No clip'),
+      h('div.body', h('div.row.spread', h('strong', moment.title), momentStatus(moment)),
+        moment.status === 'recording' ? recordingProgress(moment, nowMs) : h('p.when', when(moment.event_at, nowMs), who ? ` · ${who}` : ''))),
+    onDelete ? h('div.tile-actions', momentDeleteButton(moment, onDelete)) : null);
 }
 
 export function emptyState(title, body, action) {

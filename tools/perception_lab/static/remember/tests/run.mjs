@@ -8,6 +8,8 @@ import * as lcdTests from './lcd_test.mjs';
 import * as v1Tests from './v1_provider_test.mjs';
 import * as decisionRender from './decision_render_test.mjs';
 import * as overlayTests from './overlay_test.mjs';
+import * as deletionTests from './deletion_test.mjs';
+import * as memoryRender from './memory_render_test.mjs';
 
 storeTests.run();
 await providerTests.run();
@@ -16,6 +18,8 @@ await captureTests.run();
 await lcdTests.run();
 await v1Tests.run();
 await decisionRender.run();
+await memoryRender.run();
 overlayTests.run();
+await deletionTests.run();
 console.log(`\n${h.passes} passed, ${h.failures} failed`);
 process.exit(h.failures ? 1 : 0);

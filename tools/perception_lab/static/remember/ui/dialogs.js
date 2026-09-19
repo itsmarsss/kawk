@@ -28,8 +28,13 @@ const head = (title, subtitle, dlg) => h('div.dlg-head',
  * Moment detail. Subscribes to the store so a recording moment becomes playable when its
  * `moment.saved` arrives (or shows the failure), while unrelated state updates leave an
  * already-playing <video> untouched. A deleted moment closes the dialog.
+ *
+ * Delete: `onDelete(m)` owns the confirmation and the command, and resolves true only once the
+ * provider accepted it. The dialog never closes on its own optimism: it closes when the store
+ * drops the moment (`moment.deleted`), and stays open with the button re-enabled if the command
+ * fails, so a failed delete never looks like a success.
  * @param {string} momentId
- * @param {{getMoment: () => object|null, subscribe: (fn: () => void) => () => void, onDelete?: (m) => void, profiles?: object}} deps
+ * @param {{getMoment: () => object|null, subscribe: (fn: () => void) => () => void, onDelete?: (m) => Promise<boolean>|boolean|void, profiles?: object}} deps
  */
 export function openMomentDialog(momentId, { getMoment, subscribe, onDelete, profiles = {} }) {
   const first = getMoment();
@@ -39,7 +44,7 @@ export function openMomentDialog(momentId, { getMoment, subscribe, onDelete, pro
   let video = null;
   let signature = null;
 
-  const sig = (m) => (m ? `${m.status}|${m.clip?.url ?? ''}|${m.failure_reason ?? ''}` : 'gone');
+  const sig = (m) => (m ? `${m.status}|${m.clip?.url ?? ''}|${m.failure_reason ?? ''}|${(m.profile_ids ?? []).join(',')}` : 'gone'); // tags too: a person deleted elsewhere drops out of "With"
 
   function teardownVideo() {
     if (!video) return;
@@ -74,7 +79,15 @@ export function openMomentDialog(momentId, { getMoment, subscribe, onDelete, pro
         h('dt', 'Saved'), h('dd', m.saved_at ? full(m.saved_at) : (m.status === 'saved' ? 'yes' : m.status === 'recording' ? 'not yet' : 'not saved')),
         h('dt', 'Source'), h('dd', sourceLabel(m))),
       h('div.dlg-actions',
-        onDelete ? h('button.danger.left', { type: 'button', onClick: async () => { if (await confirmDialog('Delete this moment and its clip?', 'Delete')) { onDelete(m); dlg.close(); } } }, 'Delete') : null,
+        onDelete ? h('button.danger.left', { type: 'button', 'aria-label': `Delete moment: ${m.title}`, onClick: async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          try {
+            const done = await onDelete(m);
+            if (done && dlg.open && getMoment()) dlg.close(); // provider accepted; the event normally closed it already
+          } catch { /* onDelete reports its own failure */ }
+          finally { if (dlg.open && document.contains(btn)) btn.disabled = false; }
+        } }, m.status === 'saved' ? 'Delete' : 'Delete moment') : null,
         h('button', { type: 'button', onClick: () => dlg.close() }, 'Close')));
     replaceChildren(body, parts);
     signature = sig(m);
@@ -137,18 +150,27 @@ export function openReminderDialog({ reminder, profiles, defaultProfileId, onSav
 
 /* ---------------------------------------------------------------- note form */
 
-export function openNoteDialog({ note, profileName, onSave, storageNote = 'Kept in this browser’s demo data.' }) {
+/**
+ * @param {{note?: object, profileName: string, onSave: (text: string) => void, storageNote?: string,
+ *   maxLength?: number, provenance?: string|null, quote?: string|null}} opts
+ * `provenance`/`quote` describe an automatic (conversation) note; editing keeps that origin — the
+ * caller re-sends the whole note, the server marks it `edited_by_user`.
+ */
+export function openNoteDialog({ note, profileName, onSave, storageNote = 'Kept in this browser’s demo data.', maxLength = 400, provenance = null, quote = null }) {
   const dlg = h('dialog', { 'aria-labelledby': 'note-title' });
-  const text = h('textarea', { id: 'note-text', required: true, maxLength: 400 });
+  const text = h('textarea', { id: 'note-text', required: true, maxLength });
   text.value = note?.text ?? '';
   const err = h('p.form-error', { role: 'alert' });
   const form = h('form', { method: 'dialog', onSubmit: (e) => {
     e.preventDefault();
     const t = text.value.trim();
     if (!t) { err.textContent = 'Write something first.'; text.focus(); return; }
+    if (t.length > maxLength) { err.textContent = `Keep it under ${maxLength} characters.`; text.focus(); return; }
     onSave(t); dlg.close();
   } },
     h('label', { for: 'note-text' }, `Note about ${profileName}`, text),
+    provenance ? h('p.muted.small', provenance, '. Editing keeps this origin.') : null,
+    quote ? h('p.tiny.muted', 'Heard: “', quote, '”') : null,
     err,
     h('div.dlg-actions', h('button', { type: 'button', onClick: () => dlg.close() }, 'Cancel'), h('button.primary', { type: 'submit' }, note ? 'Save' : 'Add note')));
   dlg.append(head(note ? 'Edit note' : 'Add note', storageNote, dlg), h('div.dlg-body', form));
@@ -168,6 +190,6 @@ export function confirmDialog(message, confirmLabel = 'OK') {
       h('div.dlg-actions', h('button', { type: 'button', onClick: () => dlg.close() }, 'Cancel'),
         h('button.primary', { type: 'button', onClick: () => { result = true; dlg.close(); } }, confirmLabel))));
     open(dlg, { onClose: () => resolve(result) });
-    dlg.querySelector('button.primary').focus();
+    dlg.querySelector('.dlg-actions button:not(.primary)').focus(); // Cancel first: Enter never confirms a destructive action by default
   });
 }

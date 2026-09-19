@@ -23,6 +23,7 @@ export function emptyState() {
     display: null,             // current DisplayAction for the device screen (live V1)
     enrollment: null,          // current EnrollmentState (live V1)
     deleted_moment_ids: [],    // tombstones: a late recording/saved for a deleted moment is dropped
+    deleted_profile_ids: [],   // tombstones: late upserts/encounters/notes/reminders/moment tags cannot resurrect a deleted person
     active_encounter_id: null,
     recognition: null,
     transcript: [],
@@ -141,10 +142,18 @@ export function staleCheck(s, env) {
   const p = env.payload;
   switch (env.type) {
     case 'answer.resolved':
+      if (p.answer.profile_id && isDeletedProfile(s, p.answer.profile_id)) return 'answer about a deleted profile';
       if (!s.answer.pending) return s.answer.latest?.query_id === p.answer.query_id ? null : 'answer for a query that is not pending';
       return s.answer.pending.query_id === p.answer.query_id ? null : `answer for obsolete query ${p.answer.query_id}`;
-    case 'note.upserted': return olderThanExisting(s.notes[p.note.id], p.note) ? 'note older than stored revision' : null;
-    case 'reminder.upserted': return olderThanExisting(s.reminders[p.reminder.id], p.reminder) ? 'reminder older than stored revision' : null;
+    case 'profile.upserted': return isDeletedProfile(s, p.profile.id) ? 'profile was deleted' : null;
+    case 'profile.deleted': return s.profiles[p.profile_id] || !isDeletedProfile(s, p.profile_id) ? null : 'profile already deleted';
+    case 'encounter.started': return isDeletedProfile(s, p.encounter.profile_id) ? 'encounter for a deleted profile' : null;
+    case 'note.upserted':
+      if (isDeletedProfile(s, p.note.profile_id)) return 'note for a deleted profile';
+      return olderThanExisting(s.notes[p.note.id], p.note) ? 'note older than stored revision' : null;
+    case 'reminder.upserted':
+      if (isDeletedProfile(s, p.reminder.profile_id)) return 'reminder for a deleted profile';
+      return olderThanExisting(s.reminders[p.reminder.id], p.reminder) ? 'reminder older than stored revision' : null;
     case 'moment.recording': {
       if (s.deleted_moment_ids.includes(p.moment.id)) return 'moment was deleted';
       const cur = s.moments[p.moment.id];
@@ -167,6 +176,11 @@ export function staleCheck(s, env) {
   }
 }
 const olderThanExisting = (cur, next) => Boolean(cur && Date.parse(next.updated_at) < Date.parse(cur.updated_at));
+const isDeletedProfile = (s, id) => Array.isArray(s.deleted_profile_ids) && s.deleted_profile_ids.includes(id);
+/** Drop ambient-memory metadata that points at a deleted person; the raw transcript text stays. */
+const stripMemory = (seg, deletedIds) => (seg.memory && deletedIds.includes(seg.memory.profile_id) ? { ...seg, memory: undefined } : seg);
+/** Moments keep their clips; a deleted person is simply no longer tagged in them. */
+const untag = (moment, deletedIds) => (moment.profile_ids?.some((id) => deletedIds.includes(id)) ? { ...moment, profile_ids: moment.profile_ids.filter((id) => !deletedIds.includes(id)) } : moment);
 
 /** Pure reducer: (state, envelope) -> new state. Assumes a validated, non-stale envelope. */
 export function reduce(state, env) {
@@ -199,6 +213,30 @@ export function reduce(state, env) {
       const prev = s.profiles[p.profile.id];
       // Upsert by stable id: a replayed actor updates, never duplicates.
       s.profiles = { ...s.profiles, [p.profile.id]: prev ? { ...prev, ...p.profile, created_at: prev.created_at } : p.profile };
+      break;
+    }
+    case 'profile.deleted': {
+      const id = p.profile_id;
+      const gone = s.profiles[id] ?? null;
+      const { [id]: _dropProfile, ...profiles } = s.profiles; s.profiles = profiles;
+      const removedReminderIds = Object.values(s.reminders).filter((r) => r.profile_id === id).map((r) => r.id);
+      s.notes = Object.fromEntries(Object.entries(s.notes).filter(([, n]) => n.profile_id !== id));
+      s.reminders = Object.fromEntries(Object.entries(s.reminders).filter(([, r]) => r.profile_id !== id));
+      s.encounters = Object.fromEntries(Object.entries(s.encounters).filter(([, e]) => e.profile_id !== id));
+      if (s.active_encounter_id && !s.encounters[s.active_encounter_id]) s.active_encounter_id = null;
+      // Clips are kept; only the tag goes. last_moment_id on OTHER profiles is untouched.
+      s.moments = Object.fromEntries(Object.entries(s.moments).map(([k, m]) => [k, untag(m, [id])]));
+      if (s.recognition?.profile_id === id) s.recognition = null;
+      if (s.enrollment?.profile_id === id && ['complete', 'collecting', 'listening'].includes(s.enrollment.status)) s.enrollment = null;
+      // Mirrors the server: any person deletion clears the latest answer and the pending decision, because
+      // generic answers ("recall notes about Alex") carry no profile_id yet may show their notes.
+      s.answer = { pending: null, latest: null };
+      s.transcript = s.transcript.map((t) => stripMemory(t, [id]));
+      // The device display: drop a profile card for them or a card carrying one of their reminders.
+      // The server also sends display.updated idle in live mode; this only avoids a stale mirror meanwhile.
+      const card = s.display?.card;
+      if (card && ((card.template === 'profile' && gone && card.title === gone.name) || (card.reminder && removedReminderIds.includes(card.reminder.id)))) s.display = null;
+      if (!isDeletedProfile(s, id)) s.deleted_profile_ids = [...s.deleted_profile_ids, id].slice(-MAX_TOMBSTONES);
       break;
     }
     case 'encounter.started': {
@@ -238,7 +276,7 @@ export function reduce(state, env) {
       const { [p.reminder_id]: _drop, ...rest } = s.reminders; s.reminders = rest; break;
     }
     case 'transcript.updated': {
-      const seg = p.segment;
+      const seg = stripMemory(p.segment, s.deleted_profile_ids);
       const idx = s.transcript.findIndex((t) => t.id === seg.id);
       const list = idx >= 0 ? s.transcript.map((t, i) => (i === idx ? seg : t)) : [...s.transcript, seg];
       s.transcript = list.slice(-MAX_TRANSCRIPT);
@@ -256,7 +294,7 @@ export function reduce(state, env) {
       break;
     case 'moment.recording':
     case 'moment.saved': {
-      const m = p.moment;
+      const m = untag(p.moment, s.deleted_profile_ids);
       s.moments = { ...s.moments, [m.id]: m };
       if (env.type === 'moment.saved') {
         for (const pid of m.profile_ids ?? []) {
@@ -274,6 +312,8 @@ export function reduce(state, env) {
     case 'moment.deleted': {
       const { [p.moment_id]: _drop, ...rest } = s.moments; s.moments = rest;
       s.deleted_moment_ids = [...s.deleted_moment_ids, p.moment_id].slice(-MAX_TOMBSTONES);
+      if (s.answer.latest?.moment_id === p.moment_id) s.answer = { pending: s.answer.pending, latest: { ...s.answer.latest, moment_id: undefined } };
+      for (const [pid, prof] of Object.entries(s.profiles)) if (prof.last_moment_id === p.moment_id) s.profiles = { ...s.profiles, [pid]: { ...prof, last_moment_id: undefined } };
       break;
     }
     case 'display.updated':
@@ -312,6 +352,15 @@ export function restore(saved) {
   }
   s.moments = moments;
   s.deleted_moment_ids = Array.isArray(saved.deleted_moment_ids) ? saved.deleted_moment_ids.filter((x) => typeof x === 'string').slice(-MAX_TOMBSTONES) : [];
+  s.deleted_profile_ids = Array.isArray(saved.deleted_profile_ids) ? saved.deleted_profile_ids.filter((x) => typeof x === 'string').slice(-MAX_TOMBSTONES) : [];
+  if (s.deleted_profile_ids.length) {
+    const dead = (pid) => s.deleted_profile_ids.includes(pid);
+    for (const id of Object.keys(s.profiles)) if (dead(id)) delete s.profiles[id];
+    for (const [id, n] of Object.entries(s.notes)) if (dead(n.profile_id)) delete s.notes[id];
+    for (const [id, r] of Object.entries(s.reminders)) if (dead(r.profile_id)) delete s.reminders[id];
+    for (const [id, e] of Object.entries(s.encounters)) if (dead(e.profile_id)) delete s.encounters[id];
+    for (const [id, m] of Object.entries(s.moments)) s.moments[id] = untag(m, s.deleted_profile_ids);
+  }
   for (const e of Object.values(s.encounters)) if (!e.ended_at) s.encounters[e.id] = { ...e, ended_at: e.started_at }; // nothing is in view after a reload
   s.transcript = Array.isArray(saved.transcript) ? saved.transcript.filter((t) => t && t.is_final === true && validators.segment(t, 'segment') === null).slice(-MAX_TRANSCRIPT) : [];
   const latest = saved.answer?.latest;

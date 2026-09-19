@@ -7,7 +7,7 @@ import { createProvider, CONFIG, currentMode, setMode, LIVE_SETTINGS_KEY } from 
 import { newId, SCHEMA_VERSION } from './contracts/envelope.js';
 import { h, renderPreservingFocus, toast } from './ui/dom.js';
 import { ROUTES, onRoute, parseHash, navigate } from './ui/router.js';
-import { statusChip } from './ui/components.js';
+import { statusChip, isConversationNote, noteProvenanceText, noteStorageNote } from './ui/components.js';
 import { openMomentDialog, openReminderDialog, openNoteDialog, confirmDialog } from './ui/dialogs.js';
 import { renderNow } from './ui/views/now.js';
 import { renderProfiles } from './ui/views/profiles.js';
@@ -124,7 +124,10 @@ const quiet = (p) => p.catch(() => {});
 /* --------------------------------------------------------------------- actions */
 
 const nowIso = () => new Date().toISOString();
-const STORAGE_NOTE = isLive ? 'Kept in this temporary server session, not in a durable memory.' : 'Kept in this browser’s demo data.';
+// Reminders, encounters and clips are always session-temporary. Person notes are durable only when
+// the server's status says so (memory_persistent); the copy follows that flag, never assumes it.
+const STORAGE_NOTE = isLive ? 'Kept in this temporary server session only.' : 'Kept in this browser’s demo data.';
+const storageNoteFor = (profile) => noteStorageNote(store.getState().status, profile, { demo: !isLive });
 
 const actions = {
   demo: {
@@ -158,7 +161,11 @@ const actions = {
     updateSettings(patch) { liveCtx.settings = deepMerge(liveCtx.settings, patch); try { localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(liveCtx.settings)); } catch { /* ignore */ } render(); },
     refreshDevices,
     async reset() {
-      if (!(await confirmDialog('Reset the live session? Capture stops and this temporary session (its notes, reminders, encounters and clips) is deleted on the server. Enrolled faces in the gallery are NOT deleted.', 'Reset session'))) return;
+      const durable = store.getState().status?.memory_persistent === true;
+      const message = durable
+        ? 'Reset the live session? Capture stops and this temporary session (its reminders, encounters, clips and object notes) is deleted on the server. Enrolled faces and saved person notes stay on this Mac.'
+        : 'Reset the live session? Capture stops and this temporary session (its notes, reminders, encounters and clips) is deleted on the server. Enrolled faces in the gallery are NOT deleted.';
+      if (!(await confirmDialog(message, 'Reset session'))) return;
       await provider.destroySession();
       liveCtx.lcd?.clear();
       liveCtx.overlay?.clear();
@@ -182,8 +189,41 @@ const actions = {
       getMoment: () => store.getState().moments[moment.id] ?? null,
       subscribe: store.subscribe,
       profiles: store.getState().profiles,
-      onDelete: (m) => quiet(dispatch('moment.delete', { moment_id: m.id })),
+      onDelete: (m) => actions.moment.remove(m),
     });
+  },
+  moment: {
+    /**
+     * Confirm, then delete. Resolves true only after the provider accepted the command (demo:
+     * synchronously; live: the server ack). A failure toasts (via dispatch) and resolves false —
+     * nothing pretends the moment is gone. Works for recording, failed and saved moments alike.
+     */
+    async remove(m) {
+      const what = m.status === 'recording' ? `Delete “${m.title}”? It is still recording; the recording stops and nothing is saved.`
+        : m.status === 'failed' ? `Delete “${m.title}”? This moment has no clip.`
+        : `Delete “${m.title}” and its clip?`;
+      if (!(await confirmDialog(what, 'Delete'))) return false;
+      try { await dispatch('moment.delete', { moment_id: m.id }); } catch { return false; }
+      toast('Moment deleted');
+      return true;
+    },
+  },
+  profile: {
+    /**
+     * People only. Confirmation names the person and says what goes and what stays. Navigates to
+     * People only after the provider accepted the deletion and only if that person's page is open.
+     */
+    async remove(p) {
+      if (p.kind !== 'person') return false;
+      const message = isLive
+        ? `Delete ${p.name}? Their saved face is removed from the gallery, and their notes, reminders and encounters are deleted from this hub for every live session. Saved moments are kept; ${p.name} is just no longer tagged in them.`
+        : `Delete ${p.name} from the demo data? Their notes, reminders and encounters in this browser’s demo data go too. Saved moments are kept; ${p.name} is just no longer tagged in them.`;
+      if (!(await confirmDialog(message, `Delete ${p.name}`))) return false;
+      try { await dispatch('profile.delete', { profile_id: p.id }); } catch { return false; }
+      toast(`${p.name} deleted`);
+      if (route.page === 'people' && route.id === p.id) navigate('people');
+      return true;
+    },
   },
   reminder: {
     snoozeMinutes: CONFIG.snoozeMinutes,
@@ -203,9 +243,20 @@ const actions = {
   },
   note: {
     create(profile) {
-      openNoteDialog({ profileName: profile.name, storageNote: STORAGE_NOTE, onSave: (text) => quiet(dispatch('note.save', { note: { schema_version: SCHEMA_VERSION, id: newId('note'), profile_id: profile.id, text, created_at: nowIso(), updated_at: nowIso(), source: 'user' } })) });
+      openNoteDialog({ profileName: profile.name, storageNote: storageNoteFor(profile), onSave: (text) => quiet(dispatch('note.save', { note: { schema_version: SCHEMA_VERSION, id: newId('note'), profile_id: profile.id, text, created_at: nowIso(), updated_at: nowIso(), source: 'user' } })) });
     },
-    edit(note, profile) { openNoteDialog({ note, profileName: profile.name, storageNote: STORAGE_NOTE, onSave: (text) => quiet(dispatch('note.save', { note: { ...note, text } })) }); },
+    edit(note, profile) {
+      // `{ ...note, text }` re-sends every provenance field; an automatic note keeps its origin and
+      // the server marks it edited_by_user. Its full ≤1000-character text is editable.
+      const automatic = isConversationNote(note);
+      openNoteDialog({
+        note, profileName: profile.name, storageNote: storageNoteFor(profile),
+        maxLength: automatic ? 1000 : 400,
+        provenance: automatic ? noteProvenanceText(note, profile.name) : null,
+        quote: automatic && typeof note.source_text === 'string' ? note.source_text : null,
+        onSave: (text) => quiet(dispatch('note.save', { note: { ...note, text } })),
+      });
+    },
     async remove(note) { if (await confirmDialog('Delete this note?', 'Delete')) quiet(dispatch('note.delete', { note_id: note.id })); },
   },
 };
@@ -222,7 +273,10 @@ function render() {
   document.title = `${ROUTES.find((r) => r.key === route.page)?.label ?? 'Now'} · Remember${isLive ? '' : ' (demo)'}`;
   stageSlot.hidden = !(isLive && route.page === 'now' && liveCtx.stage);
   // Device display: render exactly what the server sent; the LCD module keeps its own video/TTL state.
-  if (isLive && liveCtx.lcd && state.display && state.display.id !== lastDisplayId) { lastDisplayId = state.display.id; liveCtx.lcd.show(state.display); }
+  if (isLive && liveCtx.lcd) {
+    if (state.display && state.display.id !== lastDisplayId) { lastDisplayId = state.display.id; liveCtx.lcd.show(state.display); }
+    else if (!state.display && lastDisplayId) { lastDisplayId = null; liveCtx.lcd.clear(); } // e.g. the shown person was deleted
+  }
   renderPreservingFocus(pageEl, () => {
     if (bootError) return h('div.empty', h('strong', 'Something went wrong'), bootError, h('div', { style: 'margin-top:12px' }, h('button', { type: 'button', onClick: () => location.reload() }, 'Reload'), ' ', h('button.quiet', { type: 'button', onClick: () => actions.live.switchMode(isLive ? 'demo' : 'live') }, isLive ? 'Use Demo mode' : 'Use Live mode')));
     if (!state.hydrated) return h('p.muted', { 'aria-live': 'polite' }, isLive ? 'Connecting to the V1 session…' : 'Loading memory…');

@@ -62,8 +62,12 @@ class Gallery:
     def delete(self, person_id):
         if person_id not in self.entries:
             return False
-        del self.entries[person_id]
-        self.save()
+        entry = self.entries.pop(person_id)
+        try:
+            self.save()
+        except OSError:
+            self.entries[person_id] = entry
+            raise
         return True
 
     def match(self, embedding, threshold=0.40):

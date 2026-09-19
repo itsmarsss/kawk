@@ -8,6 +8,20 @@
 > substituting another UI author. A component testing request does not authorize
 > executing the entire overnight build plan.
 
+> **Conversation-memory correction (2026-09-19):** Ordinary conversation is a primary
+> memory source. Jev independently decides whether a finalized statement contains useful
+> personal details, preferences, plans, interests, or future conversation topics and saves
+> selected information against the encountered person. This must NOT require “remember
+> that,” assistant-directed speech, or a command-grammar match. Command addressedness and
+> ambient memory are separate gates. The current Whisper stream has no verified speaker
+> identity: preserve exact excerpts as conversation context with the recognized person,
+> not fabricated summaries or assertions about who spoke. Bind the original stable person,
+> encounter and face stream; reject ambiguous/replaced targets and deduplicate repeats.
+> Personal notes must persist by enrolled gallery UUID across sessions/restarts, with
+> provenance and user edit/delete controls. Do not describe temporary clip/encounter state
+> as persistent memory. The browser V1 path implements this; the older production-harness
+> question-bank table below is not permission to remove automatic conversation memory.
+
 > **Remember** (working title — rename pending; keep the product name in exactly one place:
 > `hub/remember_hub/branding.py` → `PRODUCT_NAME = "Remember"`) is an always-on AI wearable
 > prototype built at Hack the North 2026. Think *Meta Ray-Ban × Even Realities G2*: a camera +

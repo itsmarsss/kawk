@@ -1,8 +1,8 @@
 import { check, eq } from './harness.mjs';
 
-// Minimal fake DOM so ui/dom.js h() can build elements in Node.
-class FakeNode {}
-function fakeDocument() {
+// Minimal fake DOM so ui/dom.js h() can build elements in Node (shared with memory_render_test).
+export class FakeNode {}
+export function fakeDocument() {
   const mk = (tag) => {
     const el = Object.assign(new FakeNode(), { tagName: tag.toUpperCase(), children: [], attrs: {}, className: '', dataset: {} });
     el.classList = { add(c) { el.className = [el.className, c].filter(Boolean).join(' '); } };
@@ -76,7 +76,7 @@ export async function run() {
   try { page = renderLiveNow({ ...base, settings: onSettings, live: liveOn, apiStatus: null }); } catch (e) { renderErr = e; }
   check(!renderErr, `renderLiveNow renders in rules mode without apiStatus (${renderErr?.message ?? 'ok'})`);
   check(/V1 command rules/.test(page.textContent) && /who is this\?/.test(page.textContent), 'rules render shows rules header and the identify phrase in the Ask helper');
-  check(/agent harness and durable memory are deferred/.test(page.textContent) && !/No agent or memory service is connected/.test(page.textContent), 'helper no longer says no agent connection exists');
+  check(/agent harness is deferred/.test(page.textContent) && /nothing is remembered automatically in rules mode/.test(page.textContent) && !/No agent or memory service is connected/.test(page.textContent), 'rules footer: harness deferred, no automatic memory claimed, no "no agent connection" wording');
   page = renderLiveNow({ ...base, settings: onSettings, live: { ...liveOn, decision: { backend: 'typesafe', phase: 'idle', model: 'jev-1.13.0', message: 'Jev waits for capture' } }, apiStatus: { decisions: { backend: 'typesafe', configured: true, model: 'jev-1.13.0', message: 'x' } } });
   check(/finalized speech waits for Jev/.test(page.textContent) && /Jev idle · jev-1\.13\.0/.test(page.textContent), 'typesafe render: Heard header waits for Jev and status strip shows runtime status');
   check(!/V1 command rules/.test(page.textContent), 'typesafe render does not claim rules act on speech');

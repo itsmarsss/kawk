@@ -1,7 +1,7 @@
 // People and Things: lists plus the profile detail page (notes, reminders, moments, encounters).
 import { h, when, clock } from '../dom.js';
 import { select } from '../../store/store.js';
-import { avatar, emptyState, momentRow, reminderStatusText } from '../components.js';
+import { avatar, emptyState, momentRow, reminderStatusText, isConversationNote, noteProvenanceText, noteProvenanceDetail, noteSourceQuote, noteStorageNote } from '../components.js';
 
 export function renderProfiles(ctx, kind, id) {
   if (id) return renderDetail(ctx, kind, id);
@@ -23,10 +23,17 @@ function listRow(ctx, p) {
   const notes = select.notesFor(state, p.id).length;
   const open = select.remindersFor(state, p.id).filter((r) => r.status !== 'completed').length;
   const href = `#/${p.kind === 'person' ? 'people' : 'things'}/${encodeURIComponent(p.id)}`;
-  return h('div.list-row',
+  return h('div.list-row', { class: p.kind === 'person' ? 'has-actions' : '' },
     avatar(p),
     h('div', h('a.name', { href }, p.name), h('div.sub', [p.descriptor, `${p.kind === 'person' ? 'Last met' : 'Last seen'} ${when(p.last_seen_at, nowMs)}`].filter(Boolean).join(' · '))),
-    h('div.sub.trail', [notes ? `${notes} note${notes > 1 ? 's' : ''}` : null, open ? `${open} reminder${open > 1 ? 's' : ''}` : null].filter(Boolean).join(' · ')));
+    h('div.sub.trail', [notes ? `${notes} note${notes > 1 ? 's' : ''}` : null, open ? `${open} reminder${open > 1 ? 's' : ''}` : null].filter(Boolean).join(' · ')),
+    deletePersonButton(ctx, p));
+}
+
+/** People only: things are tracked automatically and have no enrolment to remove. */
+function deletePersonButton(ctx, p, label = 'Delete') {
+  if (p.kind !== 'person' || !ctx.actions.profile?.remove) return null;
+  return h('button.small.quiet.danger.row-action', { type: 'button', 'aria-label': `Delete ${p.name}`, onClick: () => ctx.actions.profile.remove(p) }, label);
 }
 
 function sourceText(p, mode) {
@@ -40,11 +47,31 @@ function sourceText(p, mode) {
   }
 }
 
+/** Origin suffix after the note text. Automatic notes say where they came from without claiming who spoke. */
+export function noteSourceLabel(n, profile) {
+  if (isConversationNote(n)) return noteProvenanceText(n, profile?.name);
+  if (n.source === 'introduction') return 'from introduction';
+  if (n.source === 'user') return 'yours';
+  return '';
+}
+
+function noteRow(n, p, nowMs, actions) {
+  const label = noteSourceLabel(n, p);
+  const quote = noteSourceQuote(n);
+  return h('li', { style: 'padding:8px 0', dataset: { noteId: n.id } },
+    h('span.when', when(n.created_at, nowMs).split(' · ')[0]),
+    h('div', { style: 'flex:1 1 auto;min-width:0' },
+      h('span', n.text, label ? h('span.tiny.muted', { title: noteProvenanceDetail(n) || null }, ` · ${label}`) : null),
+      // Plain text nodes throughout: a note or transcript can never inject markup.
+      quote ? h('p.tiny.muted', { style: 'margin-top:2px' }, 'Heard: “', quote, '”') : null),
+    h('span.row', { style: 'gap:2px' }, h('button.small.quiet', { type: 'button', onClick: () => actions.note.edit(n, p) }, 'Edit'), h('button.small.quiet.danger', { type: 'button', onClick: () => actions.note.remove(n) }, 'Delete')));
+}
+
 function renderDetail(ctx, kind, id) {
   const { state, nowMs, actions } = ctx;
   const p = state.profiles[id];
   const backHref = kind === 'person' ? '#/people' : '#/things';
-  if (!p) return h('div', h('p.small', h('a', { href: backHref }, '← Back')), emptyState('Not found', 'This profile is not in the demo data (it may have been reset).'));
+  if (!p) return h('div', h('p.small', h('a', { href: backHref }, '← Back')), emptyState('Not found', ctx.mode === 'live' ? 'This profile is no longer in the session. It was deleted, or the session was reset.' : 'This profile is not in the demo data. It was deleted, or the demo was reset.'));
   const notes = select.notesFor(state, p.id);
   const reminders = select.remindersFor(state, p.id);
   const moments = select.momentsFor(state, p.id);
@@ -55,7 +82,9 @@ function renderDetail(ctx, kind, id) {
     h('header.card.profile-card', { style: 'margin-top:10px' }, avatar(p),
       h('div', h('h1', p.name), p.descriptor ? h('p.descriptor', p.descriptor) : null,
         h('p.meta', `${isPerson ? 'Last met' : 'Last seen'} ${when(p.last_seen_at, nowMs)}`, p.last_seen_location ? ` · ${p.last_seen_location}` : ''),
-        h('p.tiny.muted', { style: 'margin-top:6px' }, sourceText(p, ctx.mode)))),
+        h('p.tiny.muted', { style: 'margin-top:6px' }, sourceText(p, ctx.mode)),
+        isPerson && ctx.actions.profile?.remove ? h('div.profile-actions', deletePersonButton(ctx, p, 'Delete person'),
+          h('span.tiny.muted', ctx.mode === 'live' ? 'Removes their saved face, notes and reminders. Saved moments are kept.' : 'Removes them from this browser’s demo data. Saved moments are kept.')) : null)),
 
     isPerson ? h('section.section', { 'aria-labelledby': 'rem-h' },
       h('div.section-head', h('h2#rem-h', 'Reminders'), h('button.small', { type: 'button', onClick: () => actions.reminder.create(p.id) }, 'Add reminder')),
@@ -69,15 +98,13 @@ function renderDetail(ctx, kind, id) {
 
     h('section.section', { 'aria-labelledby': 'notes-h' },
       h('div.section-head', h('h2#notes-h', 'Notes'), h('button.small', { type: 'button', onClick: () => actions.note.create(p) }, 'Add note')),
-      notes.length ? h('div.card', h('ul.notes', { style: 'border-top:0;padding-top:0;margin-top:0' }, ...notes.map((n) => h('li', { style: 'padding:8px 0' },
-        h('span.when', when(n.created_at, nowMs).split(' · ')[0]),
-        h('span', { style: 'flex:1 1 auto' }, n.text, n.source === 'introduction' ? h('span.tiny.muted', ' · from introduction') : n.source === 'user' ? h('span.tiny.muted', ' · yours') : null),
-        h('span.row', { style: 'gap:2px' }, h('button.small.quiet', { type: 'button', onClick: () => actions.note.edit(n, p) }, 'Edit'), h('button.small.quiet.danger', { type: 'button', onClick: () => actions.note.remove(n) }, 'Delete'))))))
+      h('p.tiny.muted', { style: 'margin:-4px 0 8px' }, noteStorageNote(state.status, p, { demo: ctx.mode !== 'live' })),
+      notes.length ? h('div.card', h('ul.notes', { style: 'border-top:0;padding-top:0;margin-top:0' }, ...notes.map((n) => noteRow(n, p, nowMs, actions))))
         : h('p.muted.small', 'No notes yet.')),
 
     h('section.section', { 'aria-labelledby': 'mom-h' },
       h('div.section-head', h('h2#mom-h', 'Moments')),
-      moments.length ? h('div.card', h('ul.moment-list', ...moments.map((m) => momentRow(m, nowMs, actions.openMoment)))) : h('p.muted.small', 'No saved moments with this ' + (isPerson ? 'person' : 'object') + '.')),
+      moments.length ? h('div.card', h('ul.moment-list', ...moments.map((m) => momentRow(m, nowMs, actions.openMoment, actions.moment?.remove)))) : h('p.muted.small', 'No saved moments with this ' + (isPerson ? 'person' : 'object') + '.')),
 
     h('section.section', { 'aria-labelledby': 'enc-h' },
       h('div.section-head', h('h2#enc-h', 'Encounters')),

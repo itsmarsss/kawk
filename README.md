@@ -6,8 +6,8 @@ is `main`; William's work is on `chud3`.
 ## V1 product interface
 
 Open `http://127.0.0.1:8081/` for the live camera and 240×240 device-display preview.
-V1 connects the existing face, object and speech services to temporary profiles,
-encounters, notes, reminders and playable camera/microphone clips. Person reminders
+V1 connects the existing face, object and speech services to profiles, personal notes,
+temporary encounters/reminders and playable camera/microphone clips. Person reminders
 join by the real enrolled gallery UUID. The display uses the plan's card priorities
 and expiry rules; it is a browser preview of the LCD, not a hardware connection.
 
@@ -16,10 +16,15 @@ confirmed object disappearance. Say or type “remind me to ask Bob about dinner
 to attach a reminder to Bob's enrolled profile for the next encounter. Rules do
 not provide general semantic directedness or significance judgments.
 
-An optional direct Jev connection gates live speech and significant clips without
-the production memory/database or agent harness. Set `REMEMBER_V1_DECISIONS=typesafe`
+An optional direct Jev connection gates live commands, automatically selects useful
+details from ordinary conversation for personal notes, and selects significant clips.
+Conversation memory does not require “remember that” or assistant-directed speech.
+Set `REMEMBER_V1_DECISIONS=typesafe`
 and a private `TYPESAFE_API_KEY` in the server environment, then restart. It is
-verified with offline adapter fixtures; live Jev remains unverified without a key.
+verified with offline fixtures and a bounded live Jev test on September 19: useful
+conversation excerpts saved, repeated/filler inputs skipped, and identity guards
+prevented ambiguous assignments. This was synthetic face/transcript input, not an
+accuracy benchmark of real-world conversation or speech recognition.
 Failures are explicit and do not silently run rule-based actions. Scripted Demo
 mode remains separate from live data. See the
 [UI integration guide](tools/perception_lab/REMEMBER_UI.md) for supported requests.
@@ -30,10 +35,14 @@ cloud speech service. Real clip encoding also needs `ffmpeg` and `ffprobe` on PA
 local ML packages; Demo mode needs no model weights, capture permission or cloud key.
 Media starts only after Start. Existing component tests remain at `/lab`.
 
-Live session records and footage are temporary: Stop preserves them for recall;
-Reset or session expiry removes them. Face enrollments use the existing durable
-gallery and are not deleted by a product-session reset. This is intentionally not
-the future memory service.
+Personal notes persist in SQLite beside the selected face gallery, linked by the
+enrolled person's UUID; `REMEMBER_MEMORY_PATH` overrides the file location. Edits
+and deletions synchronize across open tabs. Selected speech is kept verbatim as
+conversation context, with its source and time; visible faces do not establish who
+spoke. Notes and face enrollments survive Reset, session expiry and server restarts.
+Other live records and footage remain temporary: Stop preserves them for recall;
+Reset or expiry removes them. The full production agent/DeviceLink harness remains
+separate from this browser V1 implementation.
 
 ## Local/cloud R&D lab
 

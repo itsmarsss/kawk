@@ -507,16 +507,18 @@ class SessionClipBuffer:
                 await _io(clip.path.unlink, True)
 
     async def delete(self, clip_id: str) -> bool:
-        record = self._records.pop(clip_id, None)
+        record = self._records.get(clip_id)
         if record is None:
             return False
         clip = record.status.clip
+        # Keep a saved record available for retry if disk deletion fails.
+        if clip:
+            await _io(clip.path.unlink, True)
+        self._records.pop(clip_id, None)
         if record.task and not record.task.done():
             self._set(record, "cancelled", clip=None, error="Clip deleted")
             record.task.cancel()
             await asyncio.gather(record.task, return_exceptions=True)
-        if clip:
-            await _io(clip.path.unlink, True)
         return True
 
     async def stop(self):

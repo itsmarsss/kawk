@@ -4,11 +4,12 @@ All methods are synchronous. Callbacks enqueue work; they must not block. ``cloc
 incoming ``observed_at`` values are UTC epoch seconds. The host maps capture-monotonic
 timestamps before ingestion. ``trigger_clip`` receives an ISO UTC ``event_at``; its
 owner later calls ``clip_completed`` or ``clip_failed``. No images or embeddings are
-stored here. State lasts only as long as this ProductSession, never in a production DB.
+stored here. Capture state is temporary; an optional note repository persists
+personal notes by enrolled gallery UUID across sessions and process restarts.
 
 Rules recognize a small anchored command grammar. They do not establish speaker
-identity, general assistant-directedness, or significance. A future decision provider
-can call the same handlers through dispatch; manual ``moment.mark`` exercises clipping.
+identity, general assistant-directedness, or significance. The Jev decision bridge
+selects ordinary conversation excerpts independently of command addressedness.
 The explicit V1 object rule also marks a repeatedly observed category after two
 seconds of confirmed absence, at its last observation, with a 30-second/category
 cooldown and the same bounded clip limits. This is a placement proxy, not Jev or
@@ -156,7 +157,8 @@ class ProductSession:
                  trigger_clip: Callable[[JSON], None] | None = None,
                  control: Callable[[JSON], None] | None = None,
                  auto_capture_rules: bool = True,
-                 on_decision_event: Callable[[JSON], None] | None = None):
+                 on_decision_event: Callable[[JSON], None] | None = None,
+                 note_memory=None):
         if not isinstance(auto_capture_rules, bool):
             raise ValueError("auto_capture_rules must be boolean")
         self.session_id = text(session_id, "session_id", 128)
@@ -164,10 +166,14 @@ class ProductSession:
         self.trigger_clip, self.control = trigger_clip, control
         self.auto_capture_rules = auto_capture_rules
         self.on_decision_event = on_decision_event
+        self.note_memory = note_memory
+        self._conversation_seen: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._deleted_notes: OrderedDict[str, None] = OrderedDict()
         self.created_at = self.clock()
         self.seq = 0
         self.running = True
         self.profiles: dict[str, JSON] = {}
+        self._deleted_profiles: OrderedDict[str, None] = OrderedDict()
         self.notes: dict[str, JSON] = {}
         self.encounters: dict[str, JSON] = {}
         self.reminders: dict[str, JSON] = {}
@@ -195,6 +201,10 @@ class ProductSession:
         self.display = self._action("idle", "Ready", "Camera and microphone are off", ttl_ms=0)
         for person in gallery_people:
             self._gallery_profile(person, emit=False)
+        if self.note_memory is not None:
+            people = [pid for pid, profile in self.profiles.items() if profile["kind"] == "person"]
+            # Session handlers append and read the last records as the newest.
+            self.notes = {note["id"]: note for note in reversed(self.note_memory.list_notes(people))}
 
     def _id(self, prefix: str) -> str:
         return f"{prefix}_{uuid.uuid4().hex}"
@@ -210,7 +220,8 @@ class ProductSession:
                 "label": ("Live · V1 rules" if self.auto_capture_rules else "Live · Jev configured") if self.running else "Live · stopped",
                 "message": "Real perception; limited command rules and temporary session history. Agent decisions are not connected."
                 if self.auto_capture_rules else "Real perception; optional Jev decisions and temporary session history. See decision status for service health.",
-                "session_id": self.session_id, **self.capture, "since": iso(self.created_at)}
+                "session_id": self.session_id, "memory_persistent": self.note_memory is not None,
+                **self.capture, "since": iso(self.created_at)}
 
     def snapshot(self) -> JSON:
         return copy.deepcopy({"schema_version": SCHEMA, "session_id": self.session_id, "status": self._status(),
@@ -320,6 +331,8 @@ class ProductSession:
 
     def _gallery_profile(self, person: JSON, *, emit: bool = True) -> str:
         ident, name = text(person.get("id"), "person.id", 128), text(person.get("name"), "person.name", 80)
+        if ident in self._deleted_profiles:
+            raise ValueError("This person was deleted; start a new enrollment")
         if ident not in self.profiles and len(self.profiles) >= MAX_RECORDS:
             raise ValueError("Session profile limit reached")
         previous = self.profiles.get(ident, {})
@@ -519,7 +532,7 @@ class ProductSession:
         previous = self._previous(ident)
         label = "Last met" if profile["kind"] == "person" else "Last seen"
         body = f"{label}: {previous['ended_at']}" if previous else ("First meeting this session" if profile["kind"] == "person" else "First seen this session")
-        notes = [n["text"] for n in self.notes.values() if n["profile_id"] == ident]
+        notes = [self._note_display_text(n) for n in self.notes.values() if n["profile_id"] == ident]
         if notes:
             body += "\n" + "\n".join(notes[-2:])
         return body
@@ -534,6 +547,12 @@ class ProductSession:
             return
         self._profile_key = key
         self._show(self._candidate, key, force=force)
+
+    @staticmethod
+    def _note_display_text(note: JSON) -> str:
+        return (f'Heard in conversation: “{note["text"]}”'
+                if note.get("attribution") == "conversation_context" and not note.get("edited_by_user")
+                else note["text"])
 
     def _due(self, ident: str) -> list[JSON]:
         eid = self.active.get(ident)
@@ -631,6 +650,7 @@ class ProductSession:
                 "generation": self._speech_generation, "stream_id": stream.stream_id,
                 "recorded_at": self.clock(), "foreground": self.foreground,
                 "identity_target": self._live_person_target(),
+                "conversation_target": self._conversation_target(),
                 "intro_targets": tuple(sorted(self._unknown_tracks)),
                 "face_stream_id": self.streams["faces"].stream_id}
             while len(self._pending_speech) > 32:
@@ -676,6 +696,11 @@ class ProductSession:
             raise ValueError("Expected a speech decision token and typed decision")
         if not isinstance(decision.get("directed"), bool) or not isinstance(decision.get("allow_introduction"), bool):
             raise ValueError("Speech decision permissions must be boolean")
+        if any(not isinstance(decision.get(key, default), bool) for key, default in
+               (("remember_conversation", False), ("command_current", True))):
+            raise ValueError("Memory and command permissions must be boolean")
+        if decision.get("remember_conversation") and decision.get("source") != "jev-1.13.0":
+            raise ValueError("Automatic conversation memory requires the pinned Jev model")
         intent = decision.get("intent")
         if not isinstance(intent, str) or intent not in {"none", "find", "identify", "introduction", "note", "recall", "clear", "reminder"}:
             raise ValueError("Unsupported speech decision intent")
@@ -689,26 +714,87 @@ class ProductSession:
             return False
         resolved = {**pending["segment"], "directed": "device" if decision["directed"] else "conversation",
                     "updated_at": iso(self.clock())}
+        rule = pending["rule"]
+        # Ambient memory is independent of addressedness and the command grammar.
+        # Explicit commands retain their own single write and confirmation path.
+        memory_saved = False
+        if decision.get("remember_conversation") and not (rule and decision["directed"]):
+            resolved["memory"] = self._remember_conversation(pending, decision)
+            memory_saved = resolved["memory"]["state"] == "saved"
         recent = self._recent_transcripts.get(pending["id"])
         if recent:
             recent.update(resolved)
         self._emit("transcript.updated", {"segment": resolved})
-        rule = pending["rule"]
+        if not decision.get("command_current", True):
+            return memory_saved
         if not rule or intent != rule[0]:
-            return False
+            return memory_saved
         if intent == "introduction":
             if (not decision["allow_introduction"] or not pending["intro_targets"]
                     or pending["intro_targets"] != tuple(sorted(self._unknown_tracks))
                     or pending["face_stream_id"] != self.streams["faces"].stream_id):
                 return False
         elif not decision["directed"]:
-            return False
+            return memory_saved
         if intent == "note" and pending["foreground"] != self.foreground:
             return False
         if intent == "identify" and pending["identity_target"] != self._live_person_target():
             return False
         self._execute_transcript_rule(pending["text"], rule)
         return True
+
+    def _conversation_target(self) -> tuple[str, str, str, str | None] | None:
+        """Bind co-present conversation context, never claim a visible face is the speaker."""
+        if self.capture["camera"] != "live" or self._face_count != 1:
+            return None
+        tracks = [track for track in self.tracks.values() if track.stream == "faces" and self._track_live(track)]
+        if len(tracks) != 1:
+            return None
+        track = tracks[0]
+        pid = track.profile_id
+        if not pid or pid not in self.active or self.profiles.get(pid, {}).get("kind") != "person":
+            return None
+        return pid, self.active[pid], track.key, self.streams["faces"].stream_id
+
+    @staticmethod
+    def _conversation_key(value: str) -> str:
+        return " ".join(value.replace("’", "'").split()).casefold().rstrip(".?! ")
+
+    def _remember_conversation(self, pending: JSON, decision: JSON) -> JSON:
+        target = pending.get("conversation_target")
+        if not target or target != self._conversation_target():
+            return {"state": "not_saved", "reason": "No unambiguous, unchanged person in view"}
+        pid, encounter, _, _ = target
+        value = pending["text"]
+        result = {"profile_id": pid, "profile_name": self.profiles[pid]["name"]}
+        key = (pid, self._conversation_key(value))
+        duplicate = next((note for note in self.notes.values() if note["profile_id"] == pid
+                          and self._conversation_key(note.get("source_text", note["text"])) == key[1]), None)
+        try:
+            if duplicate or key in self._conversation_seen or (
+                    self.note_memory is not None and self.note_memory.conversation_seen(pid, value)):
+                return {**result, "state": "duplicate", "note_id": duplicate["id"] if duplicate else None,
+                        "reason": "Already remembered or previously removed"}
+            if len(self.notes) >= MAX_RECORDS:
+                raise ValueError("Note limit reached; delete an old note before saving another")
+            note = {"schema_version": SCHEMA, "id": self._id("note"), "profile_id": pid,
+                    "text": value, "created_at": iso(pending["recorded_at"]), "updated_at": iso(self.clock()),
+                    "source": "live-agent", "attribution": "conversation_context", "speaker": "unknown",
+                    "source_text": value, "source_segment_id": pending["id"],
+                    "source_session_id": self.session_id, "source_encounter_id": encounter,
+                    "decision_model": decision["source"]}
+            if self.note_memory is not None:
+                self.note_memory.upsert_note(note)
+        except (ValueError, RuntimeError) as exc:
+            return {**result, "state": "not_saved", "reason": str(exc)[:300]}
+        self.notes[note["id"]] = note
+        self._conversation_seen[key] = None
+        while len(self._conversation_seen) > 512:
+            self._conversation_seen.popitem(last=False)
+        self._emit("note.upserted", {"note": note})
+        if self.foreground == pid:
+            self._profile_card(pid)
+        return {**result, "state": "saved", "note_id": note["id"]}
 
     def decision_state(self) -> str:
         """Bounded text-only context for a decision provider, without private vectors."""
@@ -737,6 +823,12 @@ class ProductSession:
                      for p in self.profiles.values() if p.get("last_seen_at")][-4:]
         has_person = bool(people)
         introduction_target, _ = self._introduction_target()
+        conversation_target = self._conversation_target()
+        memory_context = ({"name": self.profiles[conversation_target[0]]["name"],
+                           "attribution": "conversation context only; speaker unknown"}
+                          if conversation_target else None)
+        remembered = [note["text"][:200] for note in self.notes.values()
+                      if conversation_target and note["profile_id"] == conversation_target[0]][-4:]
 
         def serialize() -> str:
             return "\n".join([
@@ -744,6 +836,8 @@ class ProductSession:
                 f"DISPLAY {self.display['card']['template']}({display_age})",
                 "PEOPLE " + (" · ".join(people) or "none currently observed"),
                 "INTRODUCTION_TARGET=" + introduction_target,
+                "MEMORY_TARGET " + json.dumps(memory_context, ensure_ascii=False),
+                "ALREADY_REMEMBERED " + json.dumps(remembered, ensure_ascii=False),
                 "OBJECTS " + (" · ".join(objects) or "none currently observed"),
                 "CONVERSATION_CONTEXT " + ("person_in_view; speaker identity unknown" if has_person else "no person currently observed; speaker identity unknown"),
                 "LAST_SEEN " + json.dumps(last_seen, ensure_ascii=False),
@@ -751,7 +845,7 @@ class ProductSession:
             ])
 
         state = serialize()
-        for group in (last_seen, objects, people, transcript):
+        for group in (last_seen, objects, people, transcript, remembered):
             while group and len(state.encode("utf-8")) > 4096:
                 group.pop(0)
                 state = serialize()
@@ -857,7 +951,7 @@ class ProductSession:
                 ids = {self.foreground} if self.foreground else set(self.profiles)
             notes = [n for n in self.notes.values() if n["profile_id"] in ids]
             if notes:
-                answer.update(kind="found", text="\n".join(n["text"] for n in notes[-3:]))
+                answer.update(kind="found", text="\n".join(self._note_display_text(n) for n in notes[-3:]))
         elif kind == "reminder":
             answer.update(self._save_person_reminder(target))
         else:
@@ -988,6 +1082,50 @@ class ProductSession:
         if len(records) >= limit:
             raise ValueError("Temporary session storage limit reached; reset the session")
 
+    def delete_profile(self, profile_id: str, *, delete_notes: bool = True) -> None:
+        """Forget one person while retaining recordings with their tag removed."""
+        ident = text(profile_id, "profile_id", 128)
+        profile = self.profiles.get(ident)
+        if profile is not None and profile["kind"] != "person":
+            raise ValueError("Only people can be deleted")
+        memory = getattr(self, "note_memory", None)
+        if delete_notes and memory is not None:
+            memory.delete_profile_notes(ident)
+        self._deleted_profiles[ident] = None
+        self._deleted_profiles.move_to_end(ident)
+        while len(self._deleted_profiles) > 1024:
+            self._deleted_profiles.popitem(last=False)
+        removed_reminders = {key for key, row in self.reminders.items() if row["profile_id"] == ident}
+        clear_display = (self.foreground == ident or self._last_answer is not None
+                         or (self.display["card"].get("reminder") or {}).get("id") in removed_reminders
+                         or self._display_key == f"enrolled:{ident}")
+        self.profiles.pop(ident, None)
+        for records in (self.notes, self.reminders, self.encounters):
+            for key in [key for key, row in records.items() if row["profile_id"] == ident]:
+                records.pop(key)
+        self.active.pop(ident, None)
+        self.presence.pop(ident, None)
+        self._auto_clip_at.pop(ident, None)
+        for track in self.tracks.values():
+            if track.profile_id == ident:
+                track.profile_id = None
+        for moment in self.moments.values():
+            moment["profile_ids"] = [pid for pid in moment["profile_ids"] if pid != ident]
+        self._last_answer = None
+        self._answer_observation = None
+        self._invalidate_speech_decisions()
+        for transcript in self._recent_transcripts.values():
+            if transcript.get("memory", {}).get("profile_id") == ident:
+                transcript.pop("memory", None)
+        for key in [key for key in self._conversation_seen if key[0] == ident]:
+            self._conversation_seen.pop(key)
+        self._candidate = None
+        self._profile_key = None
+        self._emit("profile.deleted", {"profile_id": ident})
+        if clear_display:
+            self._idle()
+        self._foreground()
+
     def dispatch(self, command: JSON) -> JSON:
         if not isinstance(command, dict) or not isinstance(command.get("payload", {}), dict):
             raise ValueError("Expected command object and payload")
@@ -1026,7 +1164,18 @@ class ProductSession:
         elif kind == "moment.delete":
             ident = text(data.get("moment_id"), "moment_id", 128)
             self.moments.pop(ident, None)
+            for profile in self.profiles.values():
+                if profile.get("last_moment_id") == ident:
+                    profile.pop("last_moment_id", None)
+            if self._last_answer and self._last_answer.get("moment_id") == ident:
+                self._last_answer.pop("moment_id", None)
             self._emit("moment.deleted", {"moment_id": ident})
+            if self.display["card"].get("clip_id") == ident:
+                updated = copy.deepcopy(self.display)
+                updated["card"].pop("clip_id", None)
+                self._show(updated, self._id("clip_deleted"), force=True)
+        elif kind == "profile.delete":
+            self.delete_profile(data.get("profile_id"))
         elif kind in ("note.save", "reminder.save"):
             noun = kind.split(".")[0]
             record = data.get(noun)
@@ -1035,14 +1184,22 @@ class ProductSession:
             ident = text(record["id"], "id", 128) if record.get("id") else self._id(noun)
             records = self.notes if noun == "note" else self.reminders
             previous = records.get(ident)
+            if noun == "note" and ident in self._deleted_notes:
+                raise ValueError("This note no longer exists; refresh the profile")
             pid = text(record.get("profile_id"), "profile_id", 128)
             if pid not in self.profiles or (noun == "reminder" and self.profiles[pid]["kind"] != "person"):
                 raise ValueError("Unknown profile or reminder is not linked to a person")
-            value = text(record.get("text"), "text", 240 if noun == "reminder" else 400)
+            value = text(record.get("text"), "text", 240 if noun == "reminder" else 1000)
             if not previous:
+                if noun == "note" and len(records) >= MAX_RECORDS:
+                    raise ValueError("Note limit reached; delete an old note before saving another")
                 self._bounded(records)
             saved = {"schema_version": SCHEMA, "id": ident, "profile_id": pid, "text": value,
                      "created_at": previous["created_at"] if previous else iso(self.clock()), "updated_at": iso(self.clock()), "source": "user"}
+            if noun == "note" and previous and previous.get("attribution") == "conversation_context":
+                if pid != previous["profile_id"]:
+                    raise ValueError("A conversation note cannot be reassigned to a different person")
+                saved = {**previous, **saved, "source": previous["source"], "edited_by_user": True}
             if noun == "reminder":
                 defer = data.get("defer_until_next_encounter", False)
                 if not isinstance(defer, bool):
@@ -1062,6 +1219,10 @@ class ProductSession:
                 # in the first event so the current profile never flashes it.
                 if defer and pid in self.active:
                     saved["dismissed_for_encounter_id"] = self.active[pid]
+            if noun == "note" and self.note_memory is not None and self.profiles[pid]["kind"] == "person":
+                self.note_memory.upsert_note(saved)
+            if noun == "note":
+                records.pop(ident, None)  # Match persisted updated-time ordering after edits.
             records[ident] = saved
             self._emit(f"{noun}.upserted", {noun: saved})
             if self.foreground and (pid == self.foreground or (previous and previous["profile_id"] == self.foreground)):
@@ -1071,7 +1232,14 @@ class ProductSession:
             noun = kind.split(".")[0]
             ident = text(data.get(noun + "_id"), noun + "_id", 128)
             records = self.notes if noun == "note" else self.reminders
+            old = records.get(ident)
+            if noun == "note" and old and self.note_memory is not None and self.profiles[old["profile_id"]]["kind"] == "person":
+                self.note_memory.delete_note(ident)
             old = records.pop(ident, None)
+            if noun == "note":
+                self._deleted_notes[ident] = None
+                while len(self._deleted_notes) > 512:
+                    self._deleted_notes.popitem(last=False)
             self._emit(f"{noun}.deleted", {noun + "_id": ident})
             if old and old["profile_id"] == self.foreground:
                 self._profile_card(self.foreground)
