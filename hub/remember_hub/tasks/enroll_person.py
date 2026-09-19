@@ -21,6 +21,9 @@ _PREFIXES = re.compile(
     r"^(this is|their name is|her name is|his name is|that's|that is|it's|its|name is)\s+",
     re.IGNORECASE,
 )
+# Speech that is clearly a different request must not burn the enroll re-prompt
+# (the FIND_OBJECT answer for it is being handled by its own task in parallel).
+_INTENT_LIKE = re.compile(r"\b(where|what did|remember|note that|clear)\b", re.IGNORECASE)
 _TIMEOUT_S = 12.0
 
 
@@ -47,6 +50,8 @@ class EnrollPersonHandler:
         self._ctx: TaskContext | None = None  # captured at run(); bus/world/gallery live refs
 
     async def run(self, ctx: TaskContext) -> DisplayAction | None:
+        if self._pending is not None and time.time() > self._pending.deadline:
+            self._pending = None  # expired silently (user never spoke) — allow a fresh start
         if self._pending is not None:
             return None  # gate may re-fire while we wait; ignore
         track = ctx.gate_result.person_track or ctx.world.stable_unknown_person()
@@ -63,7 +68,27 @@ class EnrollPersonHandler:
         if time.time() > self._pending.deadline:
             self._pending = None
             return
+        if self._pending.track_id not in self._ctx.world.tracks.entities:
+            # The person left before telling us their name — abort with feedback.
+            self._pending = None
+            await self._ctx.bus.publish(
+                "display.action",
+                DisplayAction(
+                    card=Card(
+                        template=CardTemplate.ALERT,
+                        title="Enrollment cancelled",
+                        body="They left before I caught the name.",
+                        ttl_ms=4000,
+                    ),
+                    ttl_ms=4000,
+                    priority=PRIO_ENROLL,
+                    t_created=time.time(),
+                ),
+            )
+            return
         name = extract_name(seg.text)
+        if name is None and _INTENT_LIKE.search(seg.text):
+            return  # unrelated request — keep waiting, don't burn the re-prompt
         if name is None:
             if not self._pending.reprompted:
                 self._pending.reprompted = True
