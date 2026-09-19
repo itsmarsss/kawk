@@ -44,6 +44,7 @@ class GatePolicy:
         self.heartbeat_ms = heartbeat_ms
         self._debounce: dict[str, int] = {}
         self._lock = asyncio.Lock()
+        self._pending: dict[str, str | None] = {}  # coalesced reactive ticks
         self._hb_task: asyncio.Task | None = None
 
         bus.subscribe("world.delta", self._on_delta)
@@ -78,7 +79,23 @@ class GatePolicy:
         if seg.is_final:
             await self.tick("stt_final")
 
+    # Reasons that must never be dropped: the flagship spoken-intent path and
+    # the identity-stabilized profile tick. Everything else (heartbeats,
+    # appear/disappear bursts) is safely coalesced away while a tick is in
+    # flight — §3.1: a lock's waiter list is a queue that can grow.
+    _MUST_RUN = frozenset({"stt_final", DeltaKind.IDENTITY_CHANGED.value})
+
     async def tick(self, reason: str, entity_id: str | None = None) -> None:
+        if self._lock.locked():
+            if reason in self._MUST_RUN:
+                self._pending[reason] = entity_id
+            return
+        await self._run_tick(reason, entity_id)
+        while self._pending:
+            queued_reason, queued_entity = self._pending.popitem()
+            await self._run_tick(queued_reason, queued_entity)
+
+    async def _run_tick(self, reason: str, entity_id: str | None = None) -> None:
         async with self._lock:
             template, age_s = self.compositor.state()
             state = build_snapshot(self.world, template, age_s, self.face_cfg.match_threshold)
