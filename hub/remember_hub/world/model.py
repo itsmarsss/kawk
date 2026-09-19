@@ -50,6 +50,15 @@ class WorldModel:
     # ---- perception ingest ---------------------------------------------------
 
     async def on_detections(self, detections: list[Detection]) -> None:
+        await self._apply_update(detections)
+
+    async def sweep(self) -> None:
+        """Advance track-ends without a detection batch (heartbeat-driven) —
+        LastSeen must still get written when video stalls right after an
+        object leaves view."""
+        await self._apply_update([])
+
+    async def _apply_update(self, detections: list[Detection]) -> None:
         now = time.time()
         appeared, ended = self.tracks.update(detections, now)
         for ent in appeared:
@@ -99,7 +108,7 @@ class WorldModel:
                 width_px = (obs.box_xyxy[2] - obs.box_xyxy[0]) * 1.0
                 if width_px < self.face_cfg.min_bbox_px:
                     continue
-            track_id = obs.track_id or self._sole_person_track()
+            track_id = obs.track_id or self._associate_face(obs)
             if track_id is None or track_id not in self.tracks.entities:
                 continue
             buf = self._face_buffers.setdefault(track_id, deque(maxlen=12))
@@ -137,6 +146,12 @@ class WorldModel:
 
     async def on_stt(self, seg: TranscriptSegment) -> None:
         if seg.seg_id not in self.transcript:
+            # Evict dict entries alongside the deque — an always-on hub must not
+            # grow the transcript maps without bound.
+            if len(self._transcript_order) == self._transcript_order.maxlen:
+                oldest = self._transcript_order[0]
+                self.transcript.pop(oldest, None)
+                self._seg_wall.pop(oldest, None)
             self._transcript_order.append(seg.seg_id)
         self.transcript[seg.seg_id] = seg  # partials revise by seg_id (§6.3)
         self._seg_wall[seg.seg_id] = time.time()
@@ -220,6 +235,35 @@ class WorldModel:
             if x1 <= cx <= x2 and y1 <= cy <= y2 and iou(ent.box_xyxy, person.box_xyxy) > 0:
                 return person.track_id
         return None
+
+    def _associate_face(self, obs: FaceObservation) -> str | None:
+        """Attribute an untagged face observation to a person track by IoU in
+        normalized coordinates — the sole-person shortcut breaks the moment two
+        people are in view."""
+        ow, oh = obs.frame_wh
+        ow, oh = (ow or 1, oh or 1)
+        obs_box = (
+            obs.box_xyxy[0] / ow,
+            obs.box_xyxy[1] / oh,
+            obs.box_xyxy[2] / ow,
+            obs.box_xyxy[3] / oh,
+        )
+        best, best_score = None, 0.05  # faces are small vs person boxes; low bar
+        for ent in self.in_view():
+            if ent.label != "person":
+                continue
+            ew, eh = ent.frame_wh
+            ew, eh = (ew or 1, eh or 1)
+            ent_box = (
+                ent.box_xyxy[0] / ew,
+                ent.box_xyxy[1] / eh,
+                ent.box_xyxy[2] / ew,
+                ent.box_xyxy[3] / eh,
+            )
+            score = iou(obs_box, ent_box)
+            if score > best_score:
+                best, best_score = ent.track_id, score
+        return best if best is not None else self._sole_person_track()
 
     def _sole_person_track(self) -> str | None:
         people = [e.track_id for e in self.in_view() if e.label == "person"]

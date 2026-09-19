@@ -53,7 +53,7 @@ class TrackTable:
             tid = self._alias.get(det.track_id, det.track_id)
             ent = self.entities.get(tid)
             if ent is None:
-                dup = self._find_duplicate(det)
+                dup = self._find_duplicate(det, now)
                 if dup is not None:
                     self._alias[det.track_id] = dup.track_id
                     ent = dup
@@ -85,10 +85,16 @@ class TrackTable:
                     ended.append(ent)
         return appeared, ended
 
-    def _find_duplicate(self, det: Detection) -> Entity | None:
+    def _find_duplicate(self, det: Detection, now: float) -> Entity | None:
+        """Same-label, high-IoU entity seen WITHIN THE COAST WINDOW.
+
+        The recency guard is load-bearing: without it, person A leaving and
+        person B arriving in the same spot within track_end_s would alias B
+        onto A's entity — inheriting A's name forever (identity votes of None
+        never demote a name, by design)."""
         best, best_iou = None, 0.5
         for ent in self.entities.values():
-            if ent.label != det.label:
+            if ent.label != det.label or now - ent.last_seen > self.cfg.coast_s:
                 continue
             score = iou(ent.box_xyxy, det.box_xyxy)
             if score >= best_iou:
@@ -96,6 +102,11 @@ class TrackTable:
         return best
 
     def in_view(self, now: float | None = None) -> list[Entity]:
-        """Entities seen within the coast window (§8: coast 1 s through gaps)."""
+        """Entities seen within the coast window (§8: coast 1 s through gaps).
+
+        While FROZEN (SAM session recycle/reconnect, §6.1) coasting is extended:
+        everything stays in view until the first post-reconnect frame arrives."""
+        if self.frozen:
+            return list(self.entities.values())
         now = now if now is not None else time.time()
         return [e for e in self.entities.values() if now - e.last_seen <= self.cfg.coast_s]
