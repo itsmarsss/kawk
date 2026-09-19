@@ -1,0 +1,10 @@
+# The acceptance-bar scenario (AGENTS.md §10). Non-vacuous: contains "desk" +
+# not_contains "haven't" distinguishes a real last-seen answer from the miss card.
+name: keys
+timeline:
+  - { t: 0.5, sam: { appear: { label: desk, track: d1, box: [0.10, 0.55, 0.95, 0.98] } } }
+  - { t: 1.0, sam: { appear: { label: keys, track: k1, box: [0.60, 0.70, 0.75, 0.85] } } }
+  - { t: 6.0, sam: { disappear: { track: k1 } } }
+  - { t: 12.0, stt: { final: "where are my keys", words: true } }
+expect:
+  - { by: 13.5, display: { template: answer, contains: "desk", not_contains: "haven't" } }
