@@ -100,7 +100,7 @@ function controlBar(ctx, capturing, connected) {
 export function componentStatus(live, settings, apiStatus = null) {
   if (!live) return null;
   const cap = live.capture ?? {};
-  const item = (label, stateText, cls, detail) => h('li', h('span.comp-name', label), h('span.comp-state', { class: cls }, stateText), detail ? h('span.comp-detail.tiny.muted', detail) : null);
+  const item = (label, stateText, cls, detail) => h('li', h('span.comp-name', label), h('span.comp-state', { class: cls, title: stateText }, stateText), h('span.comp-detail.tiny.muted', { title: detail || null }, detail || ''));
   const capState = (v, enabled) => (!enabled ? ['disabled', ''] : v === 'live' ? ['live', 'ok'] : v === 'error' ? ['failed', 'err'] : ['off', '']);
   const stream = (kind, enabled, needsCam) => {
     const s = live.streams?.[kind] ?? { phase: 'idle' };
@@ -120,7 +120,7 @@ export function componentStatus(live, settings, apiStatus = null) {
     item('Faces', fT, fC, fM),
     item('Objects', oT, oC, oM),
     item('Speech', sT, sC, sM),
-    h('li', h('span.comp-name', 'Clip buffer'), h('span.comp-state', `${live.media?.frames_sent ?? 0} frames · ${live.media?.audio_chunks ?? 0} audio chunks`), live.media?.frames_dropped ? h('span.comp-detail.tiny.muted', `${live.media.frames_dropped} dropped`) : null),
+    item('Clip buffer', `${live.media?.frames_sent ?? 0} frames · ${live.media?.audio_chunks ?? 0} audio chunks`, '', live.media?.frames_dropped ? `${live.media.frames_dropped} dropped` : ''),
     decisionItem(live.decision, apiStatus?.decisions));
 }
 
@@ -145,7 +145,7 @@ export function decisionItem(decision, configured) {
     text = 'rules';
     detail = configured?.message ?? 'V1 command and object rules; Jev is not connected';
   }
-  return h('li', h('span.comp-name', 'Decisions'), h('span.comp-state', { class: cls }, text), detail ? h('span.comp-detail.tiny.muted', detail) : null);
+  return h('li', h('span.comp-name', 'Decisions'), h('span.comp-state', { class: cls, title: text }, text), h('span.comp-detail.tiny.muted', { title: detail || null }, detail || ''));
 }
 
 function noticeList(notices) {
