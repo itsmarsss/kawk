@@ -59,7 +59,17 @@ class GatePolicy:
     async def _heartbeat(self) -> None:
         while True:
             await asyncio.sleep(self.heartbeat_ms / 1000)
-            await self.tick("heartbeat")
+            try:
+                # Track-end sweep so LastSeen writes even when frames stall (§8):
+                # detection batches are not the only clock anymore.
+                await self.world.sweep()
+                await self.tick("heartbeat")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # One transient Jev/backend error must never end ambient gating
+                # for the session — enroll/clear debounce depend on this loop.
+                log.exception("heartbeat tick failed; continuing")
 
     async def _on_delta(self, delta: WorldDelta) -> None:
         await self.tick(delta.kind.value, entity_id=delta.entity_id)
