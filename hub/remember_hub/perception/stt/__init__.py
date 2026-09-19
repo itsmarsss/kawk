@@ -13,8 +13,8 @@ def create_stt_backend(cfg: SttCfg) -> SttBackend:
         return MockStt()
     if cfg.backend == "local":
         try:
-            from .local_whisper import (
-                LocalWhisper,  # Lane C  # pyright: ignore[reportMissingImports]
+            from .local_whisper import (  # Lane C  # pyright: ignore[reportMissingImports]
+                LocalWhisper,
             )
         except ImportError as e:
             raise SystemExit(

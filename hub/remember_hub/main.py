@@ -4,6 +4,9 @@
 remember.toml (§11) — with everything on "mock" this runs with zero keys and
 waits for a device (the mocks emit nothing without a scenario, so it's a wire/
 display test bench until local/baseten backends are flipped on).
+
+build_hub() returns the fully wired Hub without starting it — tests boot the
+real thing on an ephemeral port.
 """
 
 from __future__ import annotations
@@ -13,11 +16,12 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .branding import PRODUCT_NAME
 from .bus import EventBus
-from .config import load_config
+from .config import AppConfig, load_config
 from .devicelink.server import DeviceLinkServer
 from .display.compositor import Compositor
 from .gate import create_jev_backend
@@ -34,7 +38,7 @@ from .world.model import WorldModel
 log = logging.getLogger(__name__)
 
 
-def _install_recorder(bus: EventBus, out: Path) -> None:
+def install_recorder(bus: EventBus, out: Path) -> None:
     """Percept tap for scripts/record.py -> scripts/replay.py (AGENTS.md §10)."""
     out.mkdir(parents=True, exist_ok=True)
     sink = (out / "percepts.jsonl").open("a")
@@ -55,13 +59,51 @@ def _install_recorder(bus: EventBus, out: Path) -> None:
         bus.subscribe(topic, writer(topic))
 
 
-async def run(config_path: str = "remember.toml") -> None:
-    config = load_config(config_path)
+@dataclass
+class Hub:
+    config: AppConfig
+    bus: EventBus
+    memory: MemoryStore
+    gallery: FaceGallery
+    world: WorldModel
+    compositor: Compositor
+    policy: GatePolicy
+    router: TaskRouter
+    link: DeviceLinkServer
+    sam_driver: SamDriver
+    face_driver: FaceDriver
+    stt_driver: SttDriver
+    port: int | None = None
+
+    async def start(self, port: int | None = None) -> int:
+        self.port = await self.link.start(port)
+        self.policy.start()
+        self.sam_driver.start()
+        self.face_driver.start()
+        self.stt_driver.start()
+        log.info(
+            "%s hub up on ws://%s:%s (sam=%s face=%s stt=%s jev=%s)",
+            PRODUCT_NAME,
+            self.config.devicelink.host,
+            self.port,
+            self.config.services.sam.backend,
+            self.config.services.face.backend,
+            self.config.services.stt.backend,
+            self.config.services.jev.backend,
+        )
+        return self.port
+
+    async def stop(self) -> None:
+        for driver in (self.sam_driver, self.face_driver, self.stt_driver):
+            driver.stop()
+        self.policy.stop()
+        await self.link.stop()
+        self.memory.close()
+
+
+def build_hub(config: AppConfig) -> Hub:
     data = Path(config.hub.data_dir)
     bus = EventBus()
-    record_dir = os.environ.get("REMEMBER_RECORD")
-    if record_dir:
-        _install_recorder(bus, Path(record_dir))
     memory = MemoryStore(data / "remember.sqlite3")
     gallery = FaceGallery(data / "faces.npz")
     world = WorldModel(
@@ -82,38 +124,39 @@ async def run(config_path: str = "remember.toml") -> None:
         config.services.face,
         heartbeat_ms=config.hub.heartbeat_ms,
     )
-    TaskRouter(bus, world, memory, gallery)
+    router = TaskRouter(bus, world, memory, gallery)
     link = DeviceLinkServer(bus, config.devicelink, config.devices)
-
-    sam_driver = SamDriver(bus, link, create_sam_backend(config.services.sam), config.services.sam)
-    face_driver = FaceDriver(
-        bus, link, create_face_backend(config.services.face), config.services.face, world
+    return Hub(
+        config=config,
+        bus=bus,
+        memory=memory,
+        gallery=gallery,
+        world=world,
+        compositor=compositor,
+        policy=policy,
+        router=router,
+        link=link,
+        sam_driver=SamDriver(
+            bus, link, create_sam_backend(config.services.sam), config.services.sam
+        ),
+        face_driver=FaceDriver(
+            bus, link, create_face_backend(config.services.face), config.services.face, world
+        ),
+        stt_driver=SttDriver(bus, create_stt_backend(config.services.stt)),
     )
-    stt_driver = SttDriver(bus, create_stt_backend(config.services.stt))
 
-    port = await link.start()
-    policy.start()
-    sam_driver.start()
-    face_driver.start()
-    stt_driver.start()
-    log.info(
-        "%s hub up on ws://%s:%s (sam=%s face=%s stt=%s jev=%s)",
-        PRODUCT_NAME,
-        config.devicelink.host,
-        port,
-        config.services.sam.backend,
-        config.services.face.backend,
-        config.services.stt.backend,
-        config.services.jev.backend,
-    )
+
+async def run(config_path: str = "remember.toml") -> None:
+    config = load_config(config_path)
+    hub = build_hub(config)
+    record_dir = os.environ.get("REMEMBER_RECORD")
+    if record_dir:
+        install_recorder(hub.bus, Path(record_dir))
+    await hub.start()
     try:
         await asyncio.Event().wait()
     finally:
-        for driver in (sam_driver, face_driver, stt_driver):
-            driver.stop()
-        policy.stop()
-        await link.stop()
-        memory.close()
+        await hub.stop()
 
 
 def main() -> None:
