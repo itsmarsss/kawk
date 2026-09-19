@@ -1,0 +1,55 @@
+[project]
+name = "remember-hub"
+version = "0.1.0"
+description = "Remember - always-on wearable hub (Hack the North 2026)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic>=2.7",
+    "websockets>=13",
+    "pyyaml>=6",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# AGENTS.md section 11: heavy deps live in extras; make demo/test run on core only.
+sim = ["opencv-python", "sounddevice", "pygame"]
+local = [
+    "ultralytics",
+    "insightface",
+    "onnxruntime",
+    "faster-whisper",
+    "numpy>=1.26,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff",
+    "pyright",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hub/remember_hub"]
+
+[tool.pytest.ini_options]
+testpaths = ["hub/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pyright]
+include = ["hub"]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"

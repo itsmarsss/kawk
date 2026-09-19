@@ -1,0 +1,73 @@
+# Runtime configuration — no secrets here (.env carries keys). AGENTS.md section 11.
+[hub]
+heartbeat_ms = 1000
+data_dir = "data"
+
+[devicelink]
+host = "0.0.0.0"
+port = 8765
+
+[services.sam]
+backend = "mock" # mock | local | baseten
+vocabulary = [
+    "person",
+    "keys",
+    "phone",
+    "water bottle",
+    "laptop",
+    "backpack",
+    "cup",
+    "glasses",
+    "wallet",
+    "headphones",
+    "door",
+    "chair",
+    "desk",
+    "table",
+]
+score_threshold = 0.35
+poll_fps = 10
+
+[services.face]
+backend = "mock" # mock | local | baseten
+match_threshold = 0.40
+min_bbox_px = 80
+poll_fps = 5
+vote_n = 3
+
+[services.stt]
+backend = "mock" # mock | local | baseten
+
+[services.jev]
+backend = "mock" # mock | typesafe
+model = "jev-1.13.0"
+
+[gate]
+addressed_threshold = 0.65
+intent_min_prob = 0.5
+profile_threshold = 0.70
+enroll_threshold = 0.70
+enroll_debounce = 3
+clear_threshold = 0.75
+
+[world]
+coast_s = 1.0
+track_end_s = 2.0
+transcript_window_s = 60.0
+
+[devices.laptop]
+video = { w = 1280, h = 720, fps = 15, quality = 70 }
+audio = { chunk_ms = 40 }
+camera_index = 0
+
+[devices.phone]
+video = { w = 640, h = 480, fps = 15, quality = 70 }
+audio = { chunk_ms = 40 }
+
+[devices.pi]
+video = { w = 640, h = 480, fps = 15, quality = 70 }
+audio = { chunk_ms = 40 }
+
+[devices.esp32]
+video = { w = 320, h = 240, fps = 12, quality = 12 }
+audio = { chunk_ms = 40 }
