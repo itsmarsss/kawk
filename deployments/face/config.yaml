@@ -1,0 +1,28 @@
+model_name: htn2-insightface-latency-20260919
+python_version: py312
+base_image:
+  image: pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime
+  python_executable_path: /usr/bin/python3
+requirements:
+  - numpy==1.26.4
+  - onnxruntime-gpu==1.22.0
+  - insightface==0.7.3
+  - opencv-python-headless==4.11.0.86
+  - Cython
+system_packages:
+  - build-essential
+  - python3-dev
+  - libglib2.0-0
+  - libgl1
+environment_variables:
+  OMP_NUM_THREADS: "4"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NO_ALBUMENTATIONS_UPDATE: "1"
+resources:
+  accelerator: H100
+  use_gpu: true
+  cpu: "4"
+  memory: 16Gi
+runtime:
+  predict_concurrency: 1

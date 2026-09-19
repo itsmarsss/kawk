@@ -1,0 +1,17 @@
+{
+  "tested_at": "2026-09-19T11:58:15.435197+00:00",
+  "model_id": "wdlg2oe3",
+  "deployment_id": "wldeyy7",
+  "fixture_sha256": "6dc5d6f08cf2a98a2887c0d7c7e4ed4e7c94c06af44efc65402f18508630eac3",
+  "fixture": "synthetic spoken Where are my keys, repeated twice with silence",
+  "final_texts": [
+    "Where are my keys?",
+    "Where are my keys?"
+  ],
+  "zero_dropped_frames": true,
+  "revisions_share_segment_id": true,
+  "later_utterance_words_normalized": true,
+  "raw_second_start": 3.424,
+  "timestamp_limits": "service connection offsets normalized to utterance; estimated hub PCM anchor",
+  "warning": "Server first-word spans include silence; not an acoustic boundary accuracy test. Connect/warm service latency is not stable end-to-end speech latency."
+}
