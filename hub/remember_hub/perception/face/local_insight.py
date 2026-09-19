@@ -5,12 +5,29 @@ import asyncio
 import gc
 import os
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import numpy as np
 
 from remember_hub.contracts.percepts import Dimensions, FaceObservation
+
+
+class _OrtSession(Protocol):
+    def get_providers(self) -> Sequence[str]: ...
+
+
+class _Detector(Protocol):
+    session: _OrtSession
+    def prepare(self, *, ctx_id: int, input_size: tuple[int, int], det_thresh: float) -> None: ...
+    def detect(self, image: Any, *, max_num: int, metric: str) -> tuple[Any, Any]: ...
+
+
+class _Recognizer(Protocol):
+    session: _OrtSession
+    def prepare(self, *, ctx_id: int) -> None: ...
+    def get_feat(self, aligned: Any) -> Any: ...
 
 
 class _InsightEngine:
@@ -31,13 +48,23 @@ class _InsightEngine:
             raise RuntimeError(f"Requested {provider}; available: {ort.get_available_providers()}")
         cv2.setNumThreads(1)
         self.cv2, self.face_align = cv2, face_align
-        self.detector = get_model(str(files[0]), providers=[provider])
-        self.recognizer = get_model(str(files[1]), providers=[provider])
+        detector = get_model(str(files[0]), providers=[provider])
+        recognizer = get_model(str(files[1]), providers=[provider])
+        # InsightFace's dynamic factory also returns landmarks, swap models or None.
+        # Validate the two selected ONNX tasks before narrowing the SDK boundary.
+        if (detector is None or getattr(detector, "taskname", None) != "detection"
+                or getattr(detector, "session", None) is None):
+            raise RuntimeError("det_10g.onnx did not load as a face detector")
+        if (recognizer is None or getattr(recognizer, "taskname", None) != "recognition"
+                or getattr(recognizer, "session", None) is None):
+            raise RuntimeError("w600k_r50.onnx did not load as an ArcFace recognizer")
+        self.detector = cast(_Detector, detector)
+        self.recognizer = cast(_Recognizer, recognizer)
         ctx_id = -1 if provider == "CPUExecutionProvider" else 0
         self.detector.prepare(ctx_id=ctx_id, input_size=(640, 640), det_thresh=.5)
         self.recognizer.prepare(ctx_id=ctx_id)
-        self.providers = {"detection": self.detector.session.get_providers(),
-                          "recognition": self.recognizer.session.get_providers()}
+        self.providers = {"detection": list(self.detector.session.get_providers()),
+                          "recognition": list(self.recognizer.session.get_providers())}
         if any(providers[0] != provider for providers in self.providers.values()):
             raise RuntimeError(f"Provider initialization fell back: {self.providers}")
 
@@ -58,7 +85,7 @@ class _InsightEngine:
             if landmarks is None:
                 continue
             aligned = self.face_align.norm_crop(image, landmark=landmarks[i], image_size=112)
-            vector = self.recognizer.get_feat(aligned).reshape(-1).astype(np.float32)
+            vector = np.asarray(self.recognizer.get_feat(aligned), dtype=np.float32).reshape(-1)
             norm = float(np.linalg.norm(vector))
             if vector.size != 512 or not np.isfinite(vector).all() or norm <= 0:
                 raise RuntimeError("buffalo_l returned an invalid embedding")
@@ -126,6 +153,6 @@ class LocalInsightFaceBackend:
                 raise
             self.last_timings_ms = timings
             now = time.monotonic()
-            return [FaceObservation(box=tuple(box), det_score=score, embedding_512=vector,
+            return [FaceObservation(box=(float(box[0]), float(box[1]), float(box[2]), float(box[3])), det_score=score, embedding_512=vector,
                                     wh=wh, t_captured=captured, t_percept=now)
                     for box, score, vector in rows]

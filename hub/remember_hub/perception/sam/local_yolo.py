@@ -48,22 +48,34 @@ class _WorldEngine:
         if not self.clip_path.is_file():
             raise FileNotFoundError(f"Missing {self.clip_path}; run: make fetch-local-models")
         import torch
+        from ultralytics.nn.tasks import WorldModel
         from ultralytics.nn.text_model import CLIP
-        if not getattr(self.model.model, "clip_model", None):
-            self.model.model.clip_model = CLIP(str(self.clip_path), torch.device("cpu"))
+        core = self.model.model
+        if not isinstance(core, WorldModel):
+            raise RuntimeError("Expected a YOLO-World checkpoint, not another YOLO architecture")
+        if not getattr(core, "clip_model", None):
+            core.clip_model = CLIP(str(self.clip_path), torch.device("cpu"))
         self.model.set_classes(vocabulary)
 
     def infer(self, jpeg: bytes, wh: Dimensions, confidence: float):
         image = self.cv2.imdecode(np.frombuffer(jpeg, np.uint8), self.cv2.IMREAD_COLOR)
         if image is None or (image.shape[1], image.shape[0]) != tuple(wh):
             raise ValueError("JPEG dimensions must match the SENT wh")
-        result = self.model.predict(image, conf=confidence, device=self.device, verbose=False,
-                                    imgsz=640, max_det=64)[0]
+        import torch
+        from ultralytics.engine.results import Results
+        results = self.model.predict(image, conf=confidence, device=self.device, verbose=False,
+                                     imgsz=640, max_det=64, stream=False)
+        if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], Results):
+            raise RuntimeError("YOLO-World returned an unexpected single-image result")
+        result = results[0]
         if result.boxes is None:
             return []
-        boxes = result.boxes.xyxy.cpu().numpy()
-        scores = result.boxes.conf.cpu().numpy()
-        labels = result.boxes.cls.cpu().numpy()
+        def as_numpy(value):
+            # Ultralytics Results supports both tensor-backed and NumPy-backed boxes.
+            return np.asarray(value.cpu().numpy() if isinstance(value, torch.Tensor) else value)
+        boxes = as_numpy(result.boxes.xyxy)
+        scores = as_numpy(result.boxes.conf)
+        labels = as_numpy(result.boxes.cls)
         return [(result.names[int(label)], box.tolist(), float(score))
                 for box, score, label in zip(boxes, scores, labels, strict=True)]
 
@@ -151,7 +163,7 @@ class LocalYoloBackend:
                     track_id = f"yolo-{self._namespace}-{self._next_id}"
                     self._next_id += 1
                 self._tracks[track_id] = (label, box, now)
-                detections.append(Detection(track_id=track_id, label=label, box_xyxy=tuple(box),
+                detections.append(Detection(track_id=track_id, label=label, box_xyxy=(box[0], box[1], box[2], box[3]),
                                             score=score, frame_id=frame_id, wh=wh,
                                             t_captured=captured, t_percept=now))
             if len(self._tracks) > 128:
