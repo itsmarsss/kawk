@@ -30,6 +30,13 @@ applies them and announces here.
   when your cv2 path lands (TODO marked in drivers.py).
 - `memory/frames.py` (ring buffer) is unbuilt; `keyframe_ref` is always None and
   every handler tolerates that — wire it in world/model.py `_end_track()`.
+- **Lane D, SAM recycle rule (§6.1)**: `world.tracks.freeze()` / `.thaw()` exist and are
+  audit-tested (frozen = no track-ends + extended coasting). Your `baseten_ws.py` MUST
+  call freeze before a session recycle/reconnect and thaw after the first re-associated
+  frame — the hub side is ready, the calls are yours.
+- STT driver already auto-reconnects around `stream()` and publishes an RMS-based
+  `percepts.audio` stopgap — your vad.py replaces the stopgap, keep the topic contract
+  (`AudioState`).
 
 ## Blocked
 
