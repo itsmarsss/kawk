@@ -31,8 +31,11 @@ def configured_backends(face_ready=False, face_error=None):
 
     def cloud(env_name, model, default=""):
         model_id = os.getenv(env_name, default)
+        wake_note = ("may wake from zero; the initial connection can take up to two minutes while waking, and temporary drops reconnect automatically"
+                     if env_name == "BASETEN_STT_MODEL_ID"
+                     else "may wake from zero; first Start can time out, then retry once warm")
         return {"configured": bool(cloud_key and model_id),
-                "detail": f"{model} · {model_id} · may wake from zero; first Start can time out, then retry once warm" if cloud_key and model_id
+                "detail": f"{model} · {model_id} · {wake_note}" if cloud_key and model_id
                 else f"{model}: configure {env_name} and the h100-permanent profile",
                 "model_id": model_id}
 

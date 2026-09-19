@@ -62,9 +62,29 @@ class Gallery:
     def delete(self, person_id):
         if person_id not in self.entries:
             return False
-        del self.entries[person_id]
-        self.save()
+        entry = self.entries.pop(person_id)
+        try:
+            self.save()
+        except OSError:
+            self.entries[person_id] = entry
+            raise
         return True
+
+    def rename(self, person_id, name):
+        name = name.strip()
+        if not 1 <= len(name) <= 80 or any(ord(char) < 32 for char in name):
+            raise ValueError("Enter a name of 1–80 characters")
+        if person_id not in self.entries:
+            raise ValueError("This person is no longer enrolled")
+        previous = self.entries[person_id]
+        if previous[0] != name:
+            self.entries[person_id] = (name, previous[1])
+            try:
+                self.save()
+            except OSError:
+                self.entries[person_id] = previous
+                raise
+        return {"id": person_id, "name": name}
 
     def match(self, embedding, threshold=0.40):
         if not self.entries:
@@ -135,29 +155,111 @@ class FaceSession:
         self.tracks = []
         self.next_track = 1
         self.enrolling = None
+        self.observed_track_ids = set()
+        self.detected_count = 0
 
-    def begin_enrollment(self, name):
+    def begin_enrollment(self, name, target_track_id=None):
         name = str(name).strip()
         if not 1 <= len(name) <= 80 or any(ord(char) < 32 for char in name):
             raise ValueError("Enter a name of 1–80 characters")
-        self.enrolling = {"name": name, "samples": [], "started": time.monotonic()}
+        now = time.monotonic()
+        anchor = None
+        if target_track_id is not None:
+            if (isinstance(target_track_id, str) and target_track_id.isascii()
+                    and target_track_id.isdecimal() and not target_track_id.startswith("0")):
+                target_track_id = int(target_track_id)
+            if isinstance(target_track_id, bool) or not isinstance(target_track_id, int) or target_track_id < 1:
+                raise ValueError("Choose an observed face track for this introduction")
+            target = next((track for track in self.tracks if track["track_id"] == target_track_id), None)
+            if target is None or target_track_id not in self.observed_track_ids or now - target["seen"] >= 1:
+                raise ValueError("The introduced face is no longer in view; start the introduction again")
+            if self.detected_count != 1 or len(self.observed_track_ids) != 1:
+                raise ValueError("Keep only the introduced person in view before enrolling")
+            if target["stable_id"] is not None or target["match_id"] is not None:
+                raise ValueError("This face is already recognized; choose an unknown person")
+            # Bind to the face observed when the name was supplied, including before
+            # the first enrollment sample. IoU tracking alone can reuse a track.
+            anchor = target["embedding"].copy()
+        self.enrolling = {"name": name, "samples": [], "started": now,
+                          "target_track_id": target_track_id, "anchor": anchor}
+
+    def _process_bound_enrollment(self, state, result, output, now):
+        enrollment = {"name": state["name"], "collected": len(state["samples"]),
+                      "required": 5, "status": "collecting", "reason": "collecting",
+                      "target_track_id": state["target_track_id"]}
+        reason, message = None, None
+        if now - state["started"] > 30:
+            reason, message = "enrollment_timeout", "Enrollment timed out. Start the introduction again."
+        elif result["detected_count"] > 1 or len(output) > 1:
+            reason, message = "ambiguous_faces", "Another face entered view. Start again with only the introduced person visible."
+        elif len(output) != 1 or result["detected_count"] != 1:
+            reason, message = "target_missing", "The introduced face is no longer usable or visible. Start the introduction again."
+        elif output[0]["track_id"] != state["target_track_id"]:
+            reason, message = "target_changed", "The introduced face track changed. Start the introduction again."
+        elif output[0]["stable_id"] is not None or output[0]["match"]["id"] is not None:
+            reason, message = "target_known", "This face is already recognized; no new enrollment was saved."
+        else:
+            vector = unit(result["faces"][0]["embedding"])
+            if float(state["anchor"] @ vector) < 0.45 or (
+                state["samples"] and float(state["samples"][0] @ vector) < 0.45
+            ):
+                reason, message = "target_changed", "The face changed during the introduction. Start again with the same person."
+            else:
+                state["samples"].append(vector)
+                enrollment["collected"] = len(state["samples"])
+                if len(state["samples"]) >= 5:
+                    enrollment.update(status="complete", reason="enrollment_complete",
+                                      person=self.gallery.enroll(state["name"], state["samples"]))
+                    self.enrolling = None
+        if reason is not None:
+            enrollment.update(status="error", reason=reason, message=message)
+            self.enrolling = None
+        return enrollment
 
     def process(self, result):
         now = time.monotonic()
         available = [track for track in self.tracks if now - track["seen"] < 1]
         updated, output = [], []
         for face in result["faces"]:
+            vector = unit(face["embedding"])
             match = self.gallery.match(face["embedding"])
             track = max(available, key=lambda item: iou(item["box"], face["box"]), default=None)
+            if (track is not None and track["stable_id"] is None and track["match_id"] is None
+                    and match["id"] is None and (
+                        float(track["embedding"] @ vector) < 0.45
+                        or float(track["unknown_anchor"] @ vector) < 0.45)):
+                # An unknown replacement must not inherit the track to which an
+                # introduction was bound while its speech decision was pending.
+                # Retain a fixed anchor as well as the last observation so gradual
+                # drift cannot move a pending name onto a different face.
+                track = None
             if track and iou(track["box"], face["box"]) >= 0.25:
                 available.remove(track)
             else:
-                track = {"track_id": self.next_track, "votes": [], "stable_id": None}
+                track = {"track_id": self.next_track, "votes": [], "stable_id": None,
+                         "unknown_anchor": vector.copy()}
                 self.next_track += 1
-            track.update(box=face["box"], seen=now)
-            track["votes"] = (track["votes"] + [match["id"]])[-3:]
-            if len(track["votes"]) == 3 and len(set(track["votes"])) == 1:
-                track["stable_id"] = track["votes"][0]
+            track.update(box=face["box"], seen=now, embedding=vector, match_id=match["id"])
+            candidate = match["id"]
+            if candidate is not None and (
+                track["stable_id"] not in (None, candidate)
+                or any(vote not in (None, candidate) for vote in track["votes"])
+            ):
+                # A conflicting positive match must never inherit the old name or
+                # combine alternating people into a two-out-of-three majority.
+                track["votes"] = []
+                track["stable_id"] = None
+            track["votes"] = (track["votes"] + [candidate])[-3:]
+            if candidate is not None and track["votes"].count(candidate) >= 2:
+                track["stable_id"] = candidate
+                track["identity_seen"] = now
+            elif candidate is None and track["stable_id"] is not None and (
+                now - track["identity_seen"] >= 1
+                or track["votes"] == [None, None, None]
+            ):
+                # A brief weak frame may coast, but repeated weak evidence cannot
+                # keep a name forever, even while geometric tracking continues.
+                track["stable_id"] = None
             stable = self.gallery.entries.get(track["stable_id"])
             updated.append(track)
             output.append({"box": face["box"], "detection_score": face["detection_score"],
@@ -165,9 +267,14 @@ class FaceSession:
                            "stable_name": stable[0] if stable else None,
                            "stable_id": track["stable_id"] if stable else None})
         self.tracks = updated + available
+        self.observed_track_ids = {track["track_id"] for track in updated}
+        self.detected_count = result["detected_count"]
         enrollment = None
         if self.enrolling:
             state = self.enrolling
+            if state.get("target_track_id") is not None:
+                enrollment = self._process_bound_enrollment(state, result, output, now)
+                return {"faces": output, "enrollment": enrollment}
             enrollment = {"name": state["name"], "collected": len(state["samples"]), "required": 5, "status": "collecting"}
             if now - state["started"] > 30:
                 enrollment.update(status="error", message="Enrollment timed out. Try again with one face in view.")

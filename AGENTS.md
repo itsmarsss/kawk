@@ -8,6 +8,29 @@
 > substituting another UI author. A component testing request does not authorize
 > executing the entire overnight build plan.
 
+> **Spoken-name correction (2026-09-19):** A natural spoken introduction or name
+> correction can name either an unknown face or an already enrolled person.
+> Jev validates the exact spoken name candidate against one stable visible person;
+> unrelated mentions, quoted introductions and ambiguous/replaced targets are rejected.
+> Rename an enrolled person on the same gallery UUID, retaining notes and updating
+> profiles, the device card and face-box labels. Unknown people still require bound
+> face enrollment. Speech must tolerate cloud startup and recover transient connection
+> failures with bounded retries and fresh stream IDs; never replay stale audio.
+
+> **Conversation-memory correction (2026-09-19):** Ordinary conversation is a primary
+> memory source. Jev independently decides whether a finalized statement contains useful
+> personal details, preferences, plans, interests, or future conversation topics and saves
+> selected information against the encountered person. This must NOT require “remember
+> that,” assistant-directed speech, or a command-grammar match. Command addressedness and
+> ambient memory are separate gates. The current Whisper stream has no verified speaker
+> identity: preserve exact excerpts as conversation context with the recognized person,
+> not fabricated summaries or assertions about who spoke. Bind the original stable person,
+> encounter and face stream; reject ambiguous/replaced targets and deduplicate repeats.
+> Personal notes must persist by enrolled gallery UUID across sessions/restarts, with
+> provenance and user edit/delete controls. Do not describe temporary clip/encounter state
+> as persistent memory. The browser V1 path implements this; the older production-harness
+> question-bank table below is not permission to remove automatic conversation memory.
+
 > **Remember** (working title — rename pending; keep the product name in exactly one place:
 > `hub/remember_hub/branding.py` → `PRODUCT_NAME = "Remember"`) is an always-on AI wearable
 > prototype built at Hack the North 2026. Think *Meta Ray-Ban × Even Realities G2*: a camera +
@@ -284,9 +307,13 @@ pure-hub `memory/faces.py` gallery: `match(embedding) → (person_id, sim) | Non
 - Both `local_insight.py` and the Truss use **`buffalo_l`** so enrollments transfer across the
   backend switch (CPU cost at ≤5 fps is fine on an M-series MacBook). `buffalo_s` is only an
   emergency fallback — switching packs requires re-enrolling (checklist item).
-- Identity is decided by **track-level majority vote over 3 consecutive face observations**;
-  when the vote stabilizes, the world model emits an `identity_changed` delta (→ reactive Jev
-  tick, §7). Hysteresis: once displayed, a name only changes after a full new 3-vote.
+- Identity is decided by **two agreeing matches within the latest three face observations**,
+  with a positive match on the current observation. A conflicting positive identity clears
+  the previous name and its votes immediately; alternating people cannot accumulate a
+  majority. A weak observation may retain the confirmed name for at most one second and
+  fewer than three consecutive unknown observations. The V1 lab implements this policy;
+  the future world model emits an `identity_changed` delta when identity stabilizes
+  (→ reactive Jev tick, §7). Matching thresholds and one-second track expiry stay unchanged.
 - Enrollment flow (task, §9): unknown stable face → Jev confirms → display "Who is this? Say
   just their name" → STT final → mean 5–10 filtered embeddings, re-L2-normalize → one centroid.
 - **`baseten_http.py`**: plain HTTP predict (stateless, autoscaling-safe). **`mock.py`**:
@@ -529,7 +556,7 @@ Missing key + non-mock backend = loud actionable startup error, not a crash mid-
 | Snapshot + Jev bank | 100–350 ms |
 | Task + render → device paint | < 150 ms |
 | **End of question → answer card** | **< 1.5 s** |
-| **Person appears → profile card** (SAM track + 3-vote @ ≤5 fps + reactive tick) | **< 2.5 s** |
+| **Person appears → profile card** (SAM track + supported 2-of-3 vote @ ≤5 fps + reactive tick) | **< 2.5 s** |
 
 ## 13. Overnight milestones (in order; each ends green)
 

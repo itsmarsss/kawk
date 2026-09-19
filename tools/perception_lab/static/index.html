@@ -3,63 +3,33 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Remember lab</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <meta name="color-scheme" content="dark">
+  <title>Now · Remember</title>
+  <link rel="stylesheet" href="/static/remember/remember.css">
+  <link rel="icon" href="data:,">
 </head>
 <body>
-<main>
-  <h1>Remember lab</h1>
-  <p class="muted">Camera and microphone tests with local and cloud backends.</p>
-
-  <ul class="plain">
-    <li><a href="/faces">Faces</a><span class="muted">Camera, face detection, enrollment, recognition timing.</span></li>
-    <li><a href="/objects">Objects</a><span class="muted">Camera, object boxes and track IDs for a small vocabulary.</span></li>
-    <li><a href="/speech">Speech</a><span class="muted">Microphone, live Whisper transcript, delay you can feel.</span></li>
-    <li><a href="/devices">Devices</a><span class="muted">Cameras, microphones, and using a phone on the same Wi-Fi.</span></li>
-  </ul>
-
-  <h2>Server status</h2>
-  <p id="status" class="status" role="status">Loading…</p>
-  <dl class="stats" id="stats" hidden>
-    <dt>Face model</dt><dd id="face"></dd>
-    <dt>Speech model</dt><dd id="speech"></dd>
-    <dt>Enrolled people</dt><dd id="gallery"></dd>
-    <dt>Backends configured</dt><dd id="backends"></dd>
-  </dl>
-  <p id="error" class="error" role="alert"></p>
-
-  <details>
-    <summary>What is stored</summary>
-    <p class="small muted">
-      Face inference runs on this Mac, one frame at a time across all connected cameras. Each browser
-      tab has its own matching and enrollment state and its own speech connection. Only enrolled names
-      and face embeddings are saved to a local gallery file. No camera frames or microphone audio are stored.
-    </p>
-  </details>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/now" aria-label="Remember, home"><span class="brand-dot" aria-hidden="true"></span>Remember</a>
+    <nav class="nav" id="nav" aria-label="Primary"></nav>
+    <div id="status"></div>
+  </div>
+</header>
+<main id="main" tabindex="-1" aria-live="off">
+  <div id="stage" hidden></div>
+  <div id="page">
+    <noscript><p class="muted">Remember needs JavaScript to run.</p></noscript>
+    <p class="muted">Loading…</p>
+  </div>
 </main>
-<script type="module">
-  import { fetchStatus, setStatus, setError, fmtMs } from '/static/common.js';
-  const status = document.getElementById('status');
-  const error = document.getElementById('error');
-  try {
-    const s = await fetchStatus();
-    document.getElementById('stats').hidden = false;
-    document.getElementById('face').textContent = s.face.ready
-      ? `${s.face.model} ready on ${s.face.provider}, loaded in ${fmtMs(s.face.load_ms)}`
-      : (s.face.error ? `${s.face.model}: ${s.face.error}` : `${s.face.model} loading…`);
-    document.getElementById('speech').textContent = s.speech.configured
-      ? `Whisper ${s.speech.model_id} configured, ${s.speech.sample_rate} Hz, up to ${Math.round(s.speech.max_session_s / 60)} min per session`
-      : `Whisper ${s.speech.model_id} is not configured on the server`;
-    document.getElementById('gallery').textContent = String(s.gallery_count);
-    const b = s.backends;
-    document.getElementById('backends').textContent = b
-      ? ['face', 'objects', 'speech'].map((k) => `${k}: local ${b[k]?.local?.configured ? 'yes' : 'no'}, baseten ${b[k]?.baseten?.configured ? 'yes' : 'no'}`).join(' · ') + ' (configured means settings exist, not that the model is loaded)'
-      : 'not reported by server';
-    setStatus(status, 'Server reachable.', 'ok');
-  } catch (e) {
-    setStatus(status, 'Server not reachable.', 'err');
-    setError(error, e.message);
-  }
-</script>
+<footer>
+  <div class="inner">
+    <span>Live V1 preview: real camera, microphone and perception on this Mac. Person notes may persist on this Mac; other live history is temporary — the Now page shows the actual status. Demo mode is scripted and separate.</span>
+    <span class="links"><span id="mode-switch"></span><a href="/lab">Testing lab</a></span>
+  </div>
+</footer>
+<div id="dialogs"></div>
+<script type="module" src="/static/remember/app.js"></script>
 </body>
 </html>

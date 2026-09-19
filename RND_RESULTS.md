@@ -1,5 +1,9 @@
 # Local/cloud perception R&D — 2026-09-19
 
+This records the perception foundation at `87bfbfd`. Later browser-product work,
+including live Jev verification and persistent person notes, is described in
+[the current UI guide](tools/perception_lab/REMEMBER_UI.md).
+
 Both paths are implemented in the standalone browser lab. On these small
 fixtures, local objects/faces have lower delay; cloud Whisper produces earlier
 speech updates. The full Remember memory/task/device pipeline is outside this
@@ -62,12 +66,13 @@ including JPEG work), displayed the ID-reset notice, and stopped cleanly.
 Camera fixtures use prerecorded fake media; actual venue conditions remain a
 hands-on check. This is not a sustained multi-camera load or quality evaluation.
 
-Use the local/cloud selectors at `http://127.0.0.1:8081/`, or repeat measurements
+Use the local/cloud selectors at `http://127.0.0.1:8081/lab`, or repeat measurements
 with `scripts/compare_backends.py`; see the README for setup and commands. Local
 model assets, camera/audio fixtures, personal galleries and credentials are not
 committed. Cloud keys stay in the server environment or primary Baseten profile.
 Owned face/SAM deployments use minimum zero replicas and a 60-second idle delay.
 The existing teammate Whisper deployment and its settings were left unchanged.
 
-Jev's code and payload contracts are tested; no live TypeSafe key has been
-supplied, so no live Jev latency or prediction claim is made.
+At the foundation snapshot, Jev was contract-tested only. Later hosted Jev
+fixture validation is documented in the current UI guide linked above; those
+results do not turn these perception measurements into a full-product benchmark.
