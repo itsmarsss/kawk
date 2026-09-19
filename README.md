@@ -1,61 +1,66 @@
-# Remember
+# Remember — hub brain + device edge (Lanes A/B)
 
-Always-on AI wearable prototype — Hack the North 2026. A device (laptop sim today;
-phone / Pi / ESP32-S3 glasses later) streams camera + mic to a Python hub, which runs
-perception on Baseten H100s (SAM 3.1 · InsightFace · streaming Whisper), folds everything
-into a world model, asks TypeSafe's **Jev** what matters right now, and pushes answer
-cards to the device's mini display. No button press, no wake word.
-Full spec: **AGENTS.md**.
+This branch (`chud1`) carries **Lane A (Brain)** and **Lane B (Edge)** of the
+[AGENTS.md](AGENTS.md) build: the complete hub pipeline — device link → world model →
+Jev gate → task handlers → display — running end-to-end against scenario-driven mocks,
+with zero API keys and zero hardware. Perception backends (Lane C local, Lane D
+Baseten/TypeSafe) plug into the frozen interfaces here; see `INTEGRATION.md`.
 
-## Quickstart (zero keys, zero hardware)
-
-```bash
-uv sync            # core deps only
-make test          # full suite (~35 s; includes two e2e scenarios)
-make demo          # the acceptance bar: "where are my keys" end-to-end, all mocks
+```
+device ──WS──► DeviceLink ──► WorldModel ──snapshot──► Jev gate ──► TaskHandlers
+ (sim)         (edge, B)      tracks/last-seen         question      find/enroll/
+                              identity votes           bank + ticks  identify/notes
+                                                                        │
+ display ◄──── cards/blits ◄── Compositor ◄──── DisplayAction ◄─────────┘
 ```
 
-`make demo` prints the answer card: `Keys — Last seen near desk — 6 s ago (…)`.
-
-## Live status
-
-| Milestone | State |
-|---|---|
-| M0 contracts + scaffold (`m0`) | done |
-| M2a keys path — `make demo` green (`m2a`) | done |
-| M2b enroll → re-identify (`m2b`) | done |
-| M1 devicelink + headless sim (`m1`) | done |
-| M5a record/replay + latency probe | done (percept-level) |
-| M3 local backends (Lane C) | teammate |
-| M4 Baseten/TypeSafe adapters + Trusses (Lane D) | teammate |
-| Live webcam/mic sim (TCC), phone page, ESP32 | morning checklist |
-
-## The 3-minute demo script
-
-1. `make hub` in one terminal, `make sim` in another (webcam + mic + display window).
-2. Put your keys on the desk, in view. Wait a beat. Walk them out of frame.
-3. Say, to the air: **"where are my keys?"** → answer card with location + time.
-4. Have a teammate walk up. Display prompts **"Who is this?"** → they say their name →
-   card confirms. They leave and return → their profile card appears on its own.
-5. Say **"remember that Sarah owes me ten dollars"** → later: **"what did I note about
-   Sarah?"**
-
-Fallback ladder (one-line `remember.toml` flips): `baseten` → `local` → `mock` →
-`scripts/replay.py` of a rehearsal recording.
-
-## Toolbox
+## Run it (fresh clone, core deps only)
 
 ```bash
-make sim-headless                      # fixture-driven device, no camera needed
-uv run python scripts/latency_probe.py # measured legs vs AGENTS.md §12 budgets
-uv run python scripts/record.py out/   # record live percepts
-uv run python scripts/replay.py out/   # replay them through the real brain
+uv sync
+make test        # 20 tests: unit + 4 integration e2e (~45 s)
+make demo        # acceptance bar: "where are my keys" → answer card, all mocks
+make hub         # real hub on ws://0.0.0.0:8765 (mock backends)
+make sim-headless  # fixture device streaming into it (no camera/mic needed)
 ```
 
-## Privacy / consent note
+`make demo` output: `Keys — Last seen near desk — 6 s ago (…)`. The second scenario
+(`uv run python -m remember_hub.scenario scenarios/meet_person.yaml`) walks the full
+enroll flow: unknown face → "Who is this?" → *"this is Sarah"* → gallery enroll →
+re-identified → profile card.
 
-This prototype runs an always-on camera and microphone with face recognition.
-Demo policy: face **enrollment is explicit verbal opt-in only** ("Who is this?" →
-the person states their name to the device), `make demo` uses fully synthetic data,
-and recordings stay on the demo machine. InsightFace pretrained weights are
-research-use only — this is a hackathon prototype, not a product.
+## What's implemented and how it's verified
+
+| Piece | Where | Verified by |
+|---|---|---|
+| Wire codec (type-conditional header, u16 seq wrap, ts_ms) | `contracts/wire.py` | `test_wire.py` |
+| World model: IoU-deduped tracks, 1 s coasting, 2 s track-end → last-seen index | `world/` | keys e2e |
+| Attribute derivation (zone / proximity / dwell / held-by / co-visible) | `world/snapshot.py` | unit + e2e |
+| Jev gate: question bank, reactive ticks + 1 s heartbeat, debounce, addressed-gating | `gate/` | both e2e |
+| Tasks: find_object, identify, enroll (2-phase + name extraction), notes, clear | `tasks/` | meet_person e2e |
+| Face gallery: 512-d numpy, cosine ≥ 0.40, model-tag hard-fail, persistence | `memory/faces.py` | `test_units.py` |
+| DeviceLink WS server: hello/config, newest-wins frame slot, card+blit tx | `devicelink/` | `test_devicelink.py` |
+| Full hub boot + headless sim streaming through it | `main.py` (`build_hub`) | `test_hub_boot.py` |
+| Record → replay (the stage fallback) | `scripts/record.py` / `replay.py` | `test_replay.py` (subprocess) |
+| Latency probe | `scripts/latency_probe.py` | run it: ~6 ms hub overhead |
+
+**Honest gaps (by design, not oversight):** live `make sim` (webcam/mic/pygame window)
+is written but needs a human to grant macOS camera+mic permission to the terminal —
+morning checklist. Keyframe images on answer cards need `memory/frames.py` (Lane C's
+M3). `mock` STT/SAM emit nothing outside scenarios, so `make hub` is a wire test bench
+until local/Baseten backends land.
+
+## For Lane C/D (teammate)
+
+`git pull origin chud1`. Implement against `perception/*/base.py` + `gate/jev_base.py`;
+the factories in each `__init__.py` already name your modules and classes. Wiring
+notes, STT/VAD expectations, and the frames.py hook point are in `INTEGRATION.md`.
+Config flips per service in `remember.toml` (`mock | local | baseten`); env keys in
+`.env.example`.
+
+## Privacy / consent
+
+Always-on camera + mic with face recognition: enrollment is **explicit verbal opt-in**
+("Who is this?" → the person states their name), `make demo` data is fully synthetic,
+recordings stay on the demo machine. InsightFace weights are research-use only — this
+is a hackathon prototype.
