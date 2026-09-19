@@ -26,7 +26,36 @@ async def run(args):
                 yield bytes(1024)
                 await asyncio.sleep(0.032)
 
-    backend = BasetenWhisperBackend(args.model_id, api_key(args.native_profile))
+    raw_messages = []
+
+    async def capture_connect(*pos, **kwargs):
+        import websockets
+
+        upstream = await websockets.connect(*pos, **kwargs)
+
+        class Capture:
+            async def send(self, value):
+                await upstream.send(value)
+
+            async def close(self):
+                await upstream.close()
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                value = await upstream.recv()
+                if len(raw_messages) < 64:
+                    raw_messages.append(json.loads(value))
+                return value
+
+        return Capture()
+
+    backend = BasetenWhisperBackend(
+        args.model_id,
+        api_key(args.native_profile),
+        connector=capture_connect if args.raw_output else None,
+    )
     results = []
     async with asyncio.timeout(args.timeout):
         async for segment in backend.stream(audio()):
@@ -43,6 +72,9 @@ async def run(args):
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(summary, indent=2) + "\n")
+    if args.raw_output:
+        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
+        args.raw_output.write_text(json.dumps(raw_messages, indent=2) + "\n")
     if not any(x["is_final"] for x in results):
         raise RuntimeError("Smoke failed: no final transcript received")
 
@@ -55,4 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=60)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--raw-output", type=Path, help="Optional transcript-only protocol evidence"
+    )
     asyncio.run(run(parser.parse_args()))

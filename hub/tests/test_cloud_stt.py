@@ -95,6 +95,34 @@ async def test_whisper_restarted_stream_never_reuses_segment_id():
     assert first[0].seg_id != second[0].seg_id
 
 
+async def test_whisper_never_consumes_source_before_connection_ready():
+    socket = Socket()
+    ready = asyncio.Event()
+    consumed = []
+
+    async def connector(*args, **kw):
+        await ready.wait()
+        return socket
+
+    async def source():
+        consumed.append(True)
+        yield bytes(1024)
+
+    backend = BasetenWhisperBackend(
+        "test", "test", connector=connector, drain_timeout_s=0.001, final_silence_frames=0
+    )
+
+    async def collect():
+        return [item async for item in backend.stream(source())]
+
+    task = asyncio.create_task(collect())
+    await asyncio.sleep(0.02)
+    assert not consumed
+    ready.set()
+    assert len(await task) == 2
+    assert backend.dropped_audio_frames == 0
+
+
 async def test_whisper_cancel_closes_socket_and_source():
     closed = asyncio.Event()
 

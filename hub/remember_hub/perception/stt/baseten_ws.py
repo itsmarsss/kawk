@@ -111,10 +111,14 @@ class BasetenWhisperBackend:
         audio: asyncio.Queue[Any] = asyncio.Queue(maxsize=8)
         producer_error: list[Exception] = []
         finished = asyncio.Event()
+        connected = asyncio.Event()
 
         async def produce():
             buffer = bytearray()
             try:
+                # Do not advance a microphone/fixture source during connection
+                # startup. Otherwise a cold endpoint loses the first words.
+                await connected.wait()
                 async for chunk in chunks:
                     if not isinstance(chunk, bytes) or len(chunk) % 2:
                         raise ValueError("Audio must be PCM16 bytes with whole samples")
@@ -124,10 +128,14 @@ class BasetenWhisperBackend:
                         frame = bytes(buffer[:1024])
                         del buffer[:1024]
                         captured = now - (len(buffer) + 1024) / 32000
-                        if audio.full():
-                            audio.get_nowait()
-                            self.dropped_audio_frames += 1
-                        audio.put_nowait((frame, captured))
+                        try:
+                            await asyncio.wait_for(
+                                audio.put((frame, captured)), self.send_timeout_s
+                            )
+                        except TimeoutError:
+                            raise ValueError(
+                                "Whisper audio backpressure exceeded the bounded buffer; restart the stream"
+                            ) from None
                 if buffer:
                     await audio.put(
                         (bytes(buffer).ljust(1024, b"\0"), time.monotonic() - len(buffer) / 32000)
@@ -171,6 +179,7 @@ class BasetenWhisperBackend:
                     connection_id = f"{namespace}:{self.connection_generation}"
                     await asyncio.wait_for(ws.send(json.dumps(METADATA)), self.send_timeout_s)
                     connection: Any = ws
+                    connected.set()
 
                     async def send():
                         nonlocal sent_seconds, eof, first_audio
