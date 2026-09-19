@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO / "hub"))
 from remember_hub.bus import EventBus  # noqa: E402
 from remember_hub.config import load_config  # noqa: E402
 from remember_hub.contracts.percepts import (  # noqa: E402
+    AudioState,
     Detection,
     FaceObservation,
     TranscriptSegment,
@@ -33,6 +34,7 @@ _DECODERS = {
     "percepts.detections": lambda d: [Detection.model_validate(x) for x in d],
     "percepts.face": lambda d: [FaceObservation.model_validate(x) for x in d],
     "percepts.stt": lambda d: TranscriptSegment.model_validate(d),
+    "percepts.audio": lambda d: AudioState.model_validate(d),
 }
 
 

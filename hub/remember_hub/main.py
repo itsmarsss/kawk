@@ -38,8 +38,9 @@ from .world.model import WorldModel
 log = logging.getLogger(__name__)
 
 
-def install_recorder(bus: EventBus, out: Path) -> None:
-    """Percept tap for scripts/record.py -> scripts/replay.py (AGENTS.md §10)."""
+def install_recorder(bus: EventBus, out: Path):
+    """Percept tap for scripts/record.py -> scripts/replay.py (AGENTS.md §10).
+    Returns a close() callable — the caller owns the file handle's lifetime."""
     out.mkdir(parents=True, exist_ok=True)
     sink = (out / "percepts.jsonl").open("a")
 
@@ -55,8 +56,9 @@ def install_recorder(bus: EventBus, out: Path) -> None:
 
         return write
 
-    for topic in ("percepts.detections", "percepts.face", "percepts.stt"):
+    for topic in ("percepts.detections", "percepts.face", "percepts.stt", "percepts.audio"):
         bus.subscribe(topic, writer(topic))
+    return sink.close
 
 
 @dataclass
@@ -149,14 +151,17 @@ def build_hub(config: AppConfig) -> Hub:
 async def run(config_path: str = "remember.toml") -> None:
     config = load_config(config_path)
     hub = build_hub(config)
+    close_recorder = None
     record_dir = os.environ.get("REMEMBER_RECORD")
     if record_dir:
-        install_recorder(hub.bus, Path(record_dir))
+        close_recorder = install_recorder(hub.bus, Path(record_dir))
     await hub.start()
     try:
         await asyncio.Event().wait()
     finally:
         await hub.stop()
+        if close_recorder:
+            close_recorder()
 
 
 def main() -> None:

@@ -203,7 +203,9 @@ class ScenarioRunner:
             task.cancel()
         self.policy.stop()
         await asyncio.sleep(0)  # let cancellations land
-        return self._evaluate()
+        report = self._evaluate()
+        self.memory.close()  # WAL files must be closed before the tempdir goes away
+        return report
 
     async def _sam_loop(self) -> None:
         interval = 1.0 / self.config.services.sam.poll_fps
@@ -273,10 +275,22 @@ class ScenarioRunner:
         return Report(name=self.scenario.name, passed=ok, lines=lines)
 
 
+def _find_config(start: Path) -> Path:
+    for parent in [start, *start.parents]:
+        candidate = parent / "remember.toml"
+        if candidate.exists():
+            return candidate
+    fallback = Path("remember.toml")
+    if fallback.exists():
+        return fallback
+    raise SystemExit(
+        f"remember.toml not found walking up from {start} — pass config_path explicitly"
+    )
+
+
 async def run_scenario(path: str | Path, config_path: str | Path | None = None) -> Report:
     scenario = Scenario.load(path)
-    repo_root = Path(path).resolve().parent.parent
-    config = load_config(config_path or repo_root / "remember.toml")
+    config = load_config(config_path or _find_config(Path(path).resolve().parent))
     with tempfile.TemporaryDirectory(prefix="remember-scenario-") as tmp:
         runner = ScenarioRunner(scenario, config, tmp)
         return await runner.run()
