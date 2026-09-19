@@ -9,6 +9,7 @@ def payload():
     return {
         "model": "buffalo_l",
         "input_wh": [640, 480],
+        "detected_count": 2,
         "faces": [
             {"box": [10, 20, 110, 120], "det_score": 0.9, "embedding_512": [1.0] + [0.0] * 511}
         ],
@@ -47,6 +48,7 @@ async def test_face_actual_request_schema_and_sent_geometry():
     assert base64.b64decode(call["json"]["image_b64"]) == b"jpeg"
     assert call["json"]["min_face_size"] == 80
     assert backend.last_timings_ms["handler_total"] == 7.5
+    assert backend.last_detected_count == 2
 
 
 @pytest.mark.parametrize("mutation", ["model", "dimensions", "norm", "nan", "box"])

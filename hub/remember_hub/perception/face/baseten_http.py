@@ -31,6 +31,7 @@ class BasetenFaceBackend:
         self.min_face_size = min_face_size
         self.last_timings_ms: dict[str, float] = {}
         self.last_frame_accepted = False
+        self.last_detected_count: int | None = None
         self._busy = asyncio.Lock()
 
     async def embed_faces(self, jpeg: bytes, wh: Dimensions) -> list[FaceObservation]:
@@ -88,6 +89,10 @@ class BasetenFaceBackend:
             ]
             self.last_timings_ms = timings(data.get("timings_ms"))
             self.last_timings_ms["request_total"] = (time.perf_counter() - started) * 1000
+            count = data["detected_count"]
+            if not isinstance(count, int) or isinstance(count, bool) or count < len(faces):
+                raise ValueError("Invalid cloud face detected_count")
+            self.last_detected_count = count
             self.last_frame_accepted = True
             return faces
 

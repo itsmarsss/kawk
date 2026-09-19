@@ -193,3 +193,14 @@ def test_whisper_unknown_control_ignored_and_errors_not_silent():
     assert parse_transcript({"type": "ready"}, "stream", 10.0) is None
     with pytest.raises(ValueError):
         parse_transcript({"type": "error"}, "stream", 10.0)
+
+
+def test_whisper_second_utterance_offsets_are_not_counted_twice():
+    data = event(True, 1)
+    data["segments"][0]["start_time"] = 3.424
+    data["segments"][0]["word_timestamps"] = [
+        {"word": "Where", "start_time": 3.424, "end_time": 9.324, "prob": 0.45}
+    ]
+    segment = parse_transcript(data, "live", 103.424)
+    assert segment.words[0].t0 == 0
+    assert segment.t_start_hub + segment.words[0].t1 == pytest.approx(109.324)

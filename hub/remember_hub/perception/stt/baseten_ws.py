@@ -1,7 +1,8 @@
 """Verified Baseten streaming Whisper metadata and PCM framing.
 
 The input carries no capture timestamps: hub anchors use chunk arrival/send time.
-Word offsets are utterance-relative. Partials share IDs; reconnects never reuse IDs.
+Service word offsets are connection-relative; normalize to the hub utterance anchor.
+Partials share IDs; reconnects never reuse IDs.
 No deployment creation or mutation occurs here.
 """
 
@@ -31,7 +32,9 @@ METADATA = {
 }
 
 
-def parse_transcript(data: dict, namespace: str, anchor: float) -> TranscriptSegment | None:
+def parse_transcript(
+    data: dict, namespace: str, anchor: float, audio_offset: float | None = None
+) -> TranscriptSegment | None:
     if data.get("type") != "transcription":
         if data.get("type") == "error":
             raise ValueError("Whisper returned a service error")
@@ -42,10 +45,15 @@ def parse_transcript(data: dict, namespace: str, anchor: float) -> TranscriptSeg
     if not isinstance(data["is_final"], bool):
         raise ValueError("Whisper is_final must be boolean")
     segments = data["segments"]
+    if audio_offset is None:
+        audio_offset = float(segments[0].get("start_time", 0)) if segments else 0.0
+    if not math.isfinite(audio_offset) or audio_offset < 0:
+        raise ValueError("Invalid Whisper segment start")
     words = []
     for segment in segments:
         for word in segment.get("word_timestamps", []):
-            start, end = float(word["start_time"]), float(word["end_time"])
+            start = float(word["start_time"]) - audio_offset
+            end = float(word["end_time"]) - audio_offset
             if not (math.isfinite(start) and math.isfinite(end) and 0 <= start <= end):
                 raise ValueError("Invalid Whisper word timing")
             words.append(
@@ -85,7 +93,9 @@ class BasetenWhisperBackend:
         self.connection_generation = 0
         self.recovering = False
         self.dropped_audio_frames = 0
-        self.timestamp_mode = "utterance offsets; hub anchor estimated from received PCM timeline"
+        self.timestamp_mode = (
+            "service connection offsets normalized to utterance; estimated hub PCM anchor"
+        )
         self._active = False
 
     async def stream(self, pcm16_chunks: AsyncIterable[bytes]) -> AsyncIterator[TranscriptSegment]:
@@ -160,6 +170,7 @@ class BasetenWhisperBackend:
                 tasks = []
                 timeline: deque[tuple[float, float]] = deque(maxlen=4096)
                 anchors: dict[str, float] = {}
+                anchor_offsets: dict[str, float] = {}
                 eof = False
                 sent_seconds = 0.0
                 first_audio: float | None = None
@@ -208,8 +219,8 @@ class BasetenWhisperBackend:
                             if data.get("type") == "transcription":
                                 number = str(data["transcription_num"])
                                 if number not in anchors:
-                                    # Segment starts are connection-audio offsets in the
-                                    # library API; words are relative to this utterance.
+                                    # Segment and raw word starts are connection offsets,
+                                    # verified on two consecutive real-service utterances.
                                     offset = (
                                         float(data["segments"][0].get("start_time", 0))
                                         if data["segments"]
@@ -222,7 +233,10 @@ class BasetenWhisperBackend:
                                         else (timeline[0] if timeline else (0.0, time.monotonic()))
                                     )
                                     anchors[number] = origin[1] + offset - origin[0]
-                                item = parse_transcript(data, connection_id, anchors[number])
+                                    anchor_offsets[number] = offset
+                                item = parse_transcript(
+                                    data, connection_id, anchors[number], anchor_offsets[number]
+                                )
                                 if item is not None:
                                     self.recovering = False
                                     if first_audio is not None:
@@ -234,7 +248,9 @@ class BasetenWhisperBackend:
                                     if item.is_final:
                                         # Bound retained timing state in long sessions.
                                         if len(anchors) > 64:
-                                            del anchors[next(iter(anchors))]
+                                            oldest = next(iter(anchors))
+                                            del anchors[oldest]
+                                            del anchor_offsets[oldest]
                             elif data.get("type") == "error":
                                 raise ValueError("Whisper returned a service error")
                         if not eof:
