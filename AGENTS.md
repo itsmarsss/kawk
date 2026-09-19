@@ -1,5 +1,13 @@
 # AGENTS.md — Remember
 
+> **William's current working instructions (2026-09-19):** GitHub's default branch
+> is `main`; William works on `chud3`, overriding older main-commit instructions
+> below. For his UI work, use Claude Code Fable 5.1 (`claude-fable-5-1`); he
+> authorizes `--dangerously-skip-permissions`. Prefer simple testing interfaces.
+> If Claude is signed out, prepare the backend and wait for sign-in rather than
+> substituting another UI author. A component testing request does not authorize
+> executing the entire overnight build plan.
+
 > **Remember** (working title — rename pending; keep the product name in exactly one place:
 > `hub/remember_hub/branding.py` → `PRODUCT_NAME = "Remember"`) is an always-on AI wearable
 > prototype built at Hack the North 2026. Think *Meta Ray-Ban × Even Realities G2*: a camera +

@@ -1,0 +1,23 @@
+# C + D perception integration. World model, device transport and task routing
+# belong to lanes A/B and are not implemented by this component-focused change.
+[sam]
+backend = "mock"
+vocabulary = ["person", "keys", "phone", "water bottle", "laptop", "backpack", "cup", "glasses", "wallet", "headphones", "door", "chair", "desk", "table"]
+
+[face]
+backend = "mock"
+model = "buffalo_l"
+provider = "CoreMLExecutionProvider"
+threshold = 0.40
+min_face_size = 80
+max_fps = 5
+
+[stt]
+backend = "mock"
+sample_rate = 16000
+chunk_samples = 512
+model = "small"
+
+[jev]
+backend = "mock"
+model = "jev-1.13.0"

@@ -1,0 +1,307 @@
+"""Run: python -m tools.perception_lab.server (binds 0.0.0.0:8081)."""
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import hashlib
+import json
+import os
+import re
+import socket
+import subprocess
+import time
+from pathlib import Path
+from urllib.parse import urlsplit
+
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+import websockets
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from .faces import FaceEngine, FaceSession, Gallery, MODEL
+from .speech import METADATA, MODEL_ID, read_key, transcript_event
+
+HERE = Path(__file__).parent
+STATIC = HERE / "static"
+STATIC.mkdir(exist_ok=True)
+MODEL_ROOT = Path(os.getenv("REMEMBER_FACE_MODEL_ROOT", str(HERE / "data")))
+PROVIDER = os.getenv("REMEMBER_FACE_PROVIDER", "CoreMLExecutionProvider")
+GALLERY_PATH = Path(os.getenv("REMEMBER_GALLERY_PATH", str(HERE / "data" / "gallery.npz")))
+MAX_SESSION_S = 600
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app):
+    async def preload():
+        with contextlib.suppress(Exception):
+            await ensure_engine()  # Failure is exposed in /api/status; speech remains usable.
+    task = asyncio.create_task(preload())
+    yield
+    await task
+
+
+app = FastAPI(title="Perception test services", docs_url=None, redoc_url=None, lifespan=lifespan)
+gallery = Gallery(GALLERY_PATH)
+engine = None
+engine_error = None
+engine_lock = asyncio.Lock()
+
+
+def same_origin(headers):
+    # Non-browser fixture clients omit Origin. Browser capture only on this site.
+    origin = headers.get("origin")
+    return not origin or urlsplit(origin).netloc == headers.get("host")
+
+
+@app.middleware("http")
+async def origin_guard(request: Request, call_next):
+    if request.method not in ("GET", "HEAD", "OPTIONS") and not same_origin(request.headers):
+        return JSONResponse({"detail": "Use this server's page"}, status_code=403)
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    script_hashes = []
+    if request.url.path in ("/", "/faces", "/speech", "/devices"):
+        filename = "index.html" if request.url.path == "/" else request.url.path[1:] + ".html"
+        path = STATIC / filename
+        if path.exists():
+            for source in re.findall(r"<script\b[^>]*>(.*?)</script>", path.read_text(), re.S):
+                if source.strip():
+                    digest = base64.b64encode(hashlib.sha256(source.encode()).digest()).decode()
+                    script_hashes.append(f"'sha256-{digest}'")
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' " + " ".join(script_hashes) + "; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; frame-ancestors 'none'"
+    return response
+
+
+def lan_addresses():
+    # Prefer the physical LAN over a corporate VPN's default route.
+    try:
+        output = subprocess.check_output(["/sbin/ifconfig"], text=True, timeout=2)
+        addresses, interface = [], ""
+        for line in output.splitlines():
+            if line and not line[0].isspace():
+                interface = line.split(":", 1)[0]
+            elif line.strip().startswith("inet ") and interface.startswith(("en", "bridge")):
+                addresses.append(line.split()[1])
+        if addresses:
+            return addresses
+    except (OSError, subprocess.SubprocessError):
+        pass
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
+        try:
+            sock.connect(("8.8.8.8", 80))  # Route lookup only; no packet is sent.
+            return [sock.getsockname()[0]]
+        except OSError:
+            return []
+
+
+@app.get("/api/status")
+async def status():
+    try:
+        configured = bool(read_key())
+    except RuntimeError:
+        configured = False
+    return {"face": {"model": MODEL, "provider": PROVIDER, "ready": engine is not None,
+                     "load_ms": engine.load_ms if engine else None, "error": engine_error},
+            "speech": {"model_id": MODEL_ID, "configured": configured, "sample_rate": 16000,
+                       "chunk_samples": 512, "max_session_s": MAX_SESSION_S},
+            "gallery_count": len(gallery.entries), "https_port": 8443,
+            "https_available": bool(os.getenv("REMEMBER_HTTPS_ENABLED")),
+            "lan_addresses": lan_addresses(), "ui_ready": (STATIC / "index.html").exists()}
+
+
+@app.get("/api/gallery")
+async def get_gallery():
+    return {"people": gallery.list(), "model": MODEL}
+
+
+@app.delete("/api/gallery/{person_id}")
+async def delete_person(person_id: str):
+    if not gallery.delete(person_id):
+        raise HTTPException(404, "No such enrollment")
+    return {"deleted": True}
+
+
+async def ensure_engine():
+    global engine, engine_error
+    async with engine_lock:
+        if engine is None:
+            try:
+                engine = await asyncio.to_thread(FaceEngine, MODEL_ROOT, PROVIDER)
+                engine_error = None
+            except Exception as error:
+                engine_error = str(error)
+                raise
+
+
+async def ws_error(ws, message):
+    with contextlib.suppress(Exception):
+        await ws.send_json({"type": "error", "message": message})
+
+
+@app.websocket("/ws/faces")
+async def faces_socket(ws: WebSocket):
+    if not same_origin(ws.headers):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    session = FaceSession(gallery)
+    try:
+        await ensure_engine()
+        await ws.send_json({"type": "ready", "model": MODEL, "provider": PROVIDER,
+                            "load_ms": engine.load_ms, "max_fps": 5, "max_side": 640})
+        last_frame = 0
+        frame_id = 0
+        while True:
+            message = await asyncio.wait_for(ws.receive(), timeout=60)
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("text") is not None:
+                try:
+                    control = json.loads(message["text"])
+                    if not isinstance(control, dict):
+                        raise ValueError("Expected an object")
+                    if control.get("type") == "enroll":
+                        session.begin_enrollment(control.get("name", ""))
+                        await ws.send_json({"type": "enrollment_started", "name": session.enrolling["name"]})
+                    elif control.get("type") == "cancel_enrollment":
+                        session.enrolling = None
+                        await ws.send_json({"type": "enrollment_cancelled"})
+                    else:
+                        raise ValueError("Unknown camera control")
+                except (ValueError, TypeError) as error:
+                    await ws_error(ws, str(error))
+                continue
+            jpeg = message.get("bytes")
+            if not jpeg or len(jpeg) > 500_000:
+                await ws_error(ws, "Send one JPEG of at most 500 KB")
+                continue
+            if engine_lock.locked() or time.perf_counter() - last_frame < 0.19:
+                await ws.send_json({"type": "busy"})
+                continue
+            started = time.perf_counter()
+            last_frame = started
+            async with engine_lock:
+                try:
+                    result = await asyncio.to_thread(engine.infer, jpeg)
+                except ValueError as error:
+                    await ws_error(ws, str(error))
+                    continue
+                processed = session.process(result)
+            frame_id += 1
+            result["timings_ms"]["server_total"] = (time.perf_counter() - started) * 1000
+            await ws.send_json({"type": "frame", "frame_id": frame_id, **processed,
+                                "input_wh": result["input_wh"], "detected_count": result["detected_count"],
+                                "accepted_count": len(processed["faces"]), "timings_ms": result["timings_ms"]})
+    except (WebSocketDisconnect, asyncio.TimeoutError):
+        pass
+    except Exception as error:
+        await ws_error(ws, engine_error or f"Camera test failed ({type(error).__name__}); check the server log")
+        import traceback
+        traceback.print_exc()
+    finally:
+        with contextlib.suppress(Exception):
+            await ws.close()
+
+
+@app.websocket("/ws/speech")
+async def speech_socket(ws: WebSocket):
+    if not same_origin(ws.headers):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    tasks = []
+    try:
+        await ws.send_json({"type": "connecting"})
+        key = read_key()
+        started = time.perf_counter()
+        url = f"wss://model-{MODEL_ID}.api.baseten.co/environments/production/websocket"
+        async with websockets.connect(url, additional_headers={"Authorization": "Bearer " + key},
+                                      open_timeout=120, close_timeout=3, compression=None,
+                                      max_size=2_000_000, max_queue=4) as upstream:
+            await upstream.send(json.dumps(METADATA))
+            await ws.send_json({"type": "ready", "connect_ms": (time.perf_counter() - started) * 1000,
+                                "sample_rate": 16000, "chunk_samples": 512,
+                                "model_id": MODEL_ID, "max_session_s": MAX_SESSION_S})
+            connected = time.perf_counter()
+
+            async def send_audio():
+                while True:
+                    message = await ws.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return "disconnected"
+                    if message.get("bytes") is not None:
+                        chunk = message["bytes"]
+                        if len(chunk) != 1024:
+                            raise ValueError("Audio must be exactly 512 samples of 16 kHz mono PCM16 (1024 bytes)")
+                        await asyncio.wait_for(upstream.send(chunk), timeout=1.5)
+                    elif message.get("text") is not None:
+                        control = json.loads(message["text"])
+                        if isinstance(control, dict) and control.get("type") == "stop":
+                            return "stop"
+                        raise ValueError("Unknown speech control")
+
+            async def receive_text():
+                async for raw in upstream:
+                    event = transcript_event(raw)
+                    if event is not None:
+                        event["hub_received_ms"] = (time.perf_counter() - connected) * 1000
+                        await ws.send_json(event)
+
+            sender = asyncio.create_task(send_audio())
+            receiver = asyncio.create_task(receive_text())
+            tasks = [sender, receiver]
+            done, _ = await asyncio.wait(tasks, timeout=MAX_SESSION_S, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                await ws_error(ws, "Ten-minute test session finished. Start again to continue.")
+            elif sender in done and await sender == "stop":
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(receiver), timeout=2)
+            elif receiver in done:
+                await receiver
+                await ws_error(ws, "Whisper closed the connection. Start again to reconnect.")
+            # Cancel before leaving the upstream context so no tasks outlive sockets.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except (WebSocketDisconnect, websockets.ConnectionClosed):
+        pass
+    except (ValueError, RuntimeError) as error:
+        await ws_error(ws, str(error))
+    except Exception as error:
+        # Do not serialize upstream exceptions that might contain auth headers.
+        await ws_error(ws, f"Whisper connection failed ({type(error).__name__}). Retry or check deployment status.")
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        with contextlib.suppress(Exception):
+            await ws.close()
+
+
+@app.get("/")
+@app.get("/faces")
+@app.get("/speech")
+@app.get("/devices")
+async def page(request: Request):
+    filename = "index.html" if request.url.path == "/" else request.url.path[1:] + ".html"
+    path = STATIC / filename
+    if not path.is_file():
+        return JSONResponse({"status": "Testing UI is being built; backend is ready"}, status_code=503)
+    return FileResponse(path)
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8081")),
+                ws_max_size=500_000, ws_max_queue=1, ws_per_message_deflate=False,
+                ssl_certfile=os.getenv("REMEMBER_TLS_CERT"), ssl_keyfile=os.getenv("REMEMBER_TLS_KEY"))

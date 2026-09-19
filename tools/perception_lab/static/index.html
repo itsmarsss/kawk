@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remember lab</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<main>
+  <h1>Remember lab</h1>
+  <p class="muted">Test pages for the face and speech components running on this Mac.</p>
+
+  <ul class="plain">
+    <li><a href="/faces">Faces</a><span class="muted">Camera, face detection, enrollment, recognition timing.</span></li>
+    <li><a href="/speech">Speech</a><span class="muted">Microphone, live Whisper transcript, delay you can feel.</span></li>
+    <li><a href="/devices">Devices</a><span class="muted">Cameras, microphones, and using a phone on the same Wi-Fi.</span></li>
+  </ul>
+
+  <h2>Server status</h2>
+  <p id="status" class="status" role="status">Loading…</p>
+  <dl class="stats" id="stats" hidden>
+    <dt>Face model</dt><dd id="face"></dd>
+    <dt>Speech model</dt><dd id="speech"></dd>
+    <dt>Enrolled people</dt><dd id="gallery"></dd>
+  </dl>
+  <p id="error" class="error" role="alert"></p>
+
+  <details>
+    <summary>What is stored</summary>
+    <p class="small muted">
+      Face inference runs on this Mac, one frame at a time across all connected cameras. Each browser
+      tab has its own matching and enrollment state and its own speech connection. Only enrolled names
+      and face embeddings are saved to a local gallery file. No camera frames or microphone audio are stored.
+    </p>
+  </details>
+</main>
+<script type="module">
+  import { fetchStatus, setStatus, setError, fmtMs } from '/static/common.js';
+  const status = document.getElementById('status');
+  const error = document.getElementById('error');
+  try {
+    const s = await fetchStatus();
+    document.getElementById('stats').hidden = false;
+    document.getElementById('face').textContent = s.face.ready
+      ? `${s.face.model} ready on ${s.face.provider}, loaded in ${fmtMs(s.face.load_ms)}`
+      : (s.face.error ? `${s.face.model}: ${s.face.error}` : `${s.face.model} loading…`);
+    document.getElementById('speech').textContent = s.speech.configured
+      ? `Whisper ${s.speech.model_id} configured, ${s.speech.sample_rate} Hz, up to ${Math.round(s.speech.max_session_s / 60)} min per session`
+      : `Whisper ${s.speech.model_id} is not configured on the server`;
+    document.getElementById('gallery').textContent = String(s.gallery_count);
+    const ok = s.face.ready && s.speech.configured;
+    setStatus(status, ok ? 'Server reachable, all components ready.' : 'Server reachable, some components are not ready.', ok ? 'ok' : 'warn');
+  } catch (e) {
+    setStatus(status, 'Server not reachable.', 'err');
+    setError(error, e.message);
+  }
+</script>
+</body>
+</html>

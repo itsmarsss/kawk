@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+.env.*
+!.env.example
+.DS_Store
+tools/perception_lab/data/
+tools/perception_lab/certs/
+data/
+models/
+recordings/
+*.egg-info/
+.ruff_cache/

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Devices · Remember lab</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<main>
+  <nav><a href="/">Home</a><a href="/faces">Faces</a><a href="/speech">Speech</a><a href="/devices" aria-current="page">Devices</a></nav>
+  <h1>Devices</h1>
+
+  <h2>Cameras and microphones on this computer</h2>
+  <p class="small muted">Built-in, USB, and connected Continuity devices that macOS already sees. Connect the device in macOS first, then click Refresh. Names appear after you grant access once.</p>
+  <div class="row">
+    <label>Cameras
+      <select id="cameras" aria-describedby="labels-help"></select>
+    </label>
+    <label>Microphones
+      <select id="mics" aria-describedby="labels-help"></select>
+    </label>
+  </div>
+  <div class="row">
+    <button id="refresh" type="button">Refresh</button>
+    <button id="grant" type="button">Grant access to show names</button>
+  </div>
+  <p id="labels-help" class="small muted">"Grant access" opens the camera and microphone for a moment so names show, then stops them. Nothing is streamed.</p>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <p id="error" class="error" role="alert"></p>
+
+  <h2>Phone or another computer on the same Wi-Fi</h2>
+  <p class="small">Browsers only allow camera and microphone access on a secure page. On this Mac, plain <code>http://127.0.0.1:8081/</code> works. From another device the page must be served over HTTPS with a certificate that the other device trusts.</p>
+  <ul id="lan" class="plain"><li class="muted">Checking server status…</li></ul>
+  <p class="small muted">Each device runs the Faces and Speech pages independently: its own camera or microphone, its own matching state, and its own Whisper connection. The face model on this Mac serves them one frame at a time, and the enrolled gallery is shared.</p>
+</main>
+<script type="module">
+  import { fetchStatus, setStatus, setError, fillDeviceSelect, describeMediaError, stopTracks } from '/static/common.js';
+  const $ = (id) => document.getElementById(id);
+  const cameras = $('cameras'), mics = $('mics'), status = $('status'), error = $('error');
+
+  async function refresh() {
+    try {
+      const [c, m] = await Promise.all([fillDeviceSelect(cameras, 'videoinput', 'Camera'), fillDeviceSelect(mics, 'audioinput', 'Microphone')]);
+      const unlabeled = (c.unlabeled || 0) + (m.unlabeled || 0);
+      setStatus(status, `${c.devices?.length ?? 0} camera(s), ${m.devices?.length ?? 0} microphone(s) visible.${unlabeled ? ' Some names are hidden until access is granted.' : ''}`, '');
+    } catch (e) { setError(error, `Could not list devices: ${e.message}`); }
+  }
+
+  $('refresh').addEventListener('click', refresh);
+  $('grant').addEventListener('click', async () => {
+    setError(error, '');
+    if (!navigator.mediaDevices?.getUserMedia) { setError(error, 'Media access is not available here. Use localhost or trusted HTTPS.'); return; }
+    let s = null;
+    try {
+      s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    } catch (e) {
+      // Try each separately so one missing device does not block the other's labels.
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { /* ignore */ }
+      if (!s) { setError(error, describeMediaError(e, 'Camera or microphone')); }
+    } finally {
+      stopTracks(s);
+    }
+    await refresh();
+  });
+  navigator.mediaDevices?.addEventListener?.('devicechange', refresh);
+  refresh();
+
+  const lan = $('lan');
+  const item = (text, cls = 'muted') => Object.assign(document.createElement('li'), { className: cls, textContent: text });
+  try {
+    const st = await fetchStatus();
+    if (!st.https_available) {
+      lan.replaceChildren(
+        item('Phone access needs HTTPS setup on this server, which is not configured yet. Use a camera or microphone connected to this Mac for now (built-in, USB, or an already-connected Continuity device).', ''),
+        item(`When HTTPS is set up it will listen on port ${st.https_port}${st.lan_addresses?.length ? ` at ${st.lan_addresses.join(', ')}` : ''}, and the certificate will have to be trusted on the other device before its browser allows camera or microphone access.`, 'muted small'),
+      );
+    } else {
+      const items = (st.lan_addresses || []).map((ip) => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = `https://${ip}:${st.https_port}/`;
+        a.textContent = a.href;
+        li.append(a, Object.assign(document.createElement('span'), { className: 'muted small', textContent: 'open on the other device; its browser must trust this server\'s certificate first' }));
+        return li;
+      });
+      lan.replaceChildren(...(items.length ? items : [item('HTTPS is available but the server reported no LAN address. Check Wi-Fi on this Mac.')]));
+    }
+  } catch (e) {
+    lan.replaceChildren(item(`Could not read server status: ${e.message}`));
+  }
+</script>
+</body>
+</html>

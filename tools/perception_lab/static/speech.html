@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Speech · Remember lab</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<main>
+  <nav><a href="/">Home</a><a href="/faces">Faces</a><a href="/speech" aria-current="page">Speech</a><a href="/devices">Devices</a></nav>
+  <h1>Live speech</h1>
+  <p class="muted small">Pick a microphone, click Start, and speak. Nothing is recorded until you click Start.</p>
+
+  <div class="row">
+    <label>Microphone
+      <select id="mic" aria-describedby="mic-help"></select>
+    </label>
+    <button id="refresh" type="button">Refresh devices</button>
+  </div>
+  <p id="mic-help" class="small muted">Names appear after the first Start. Changing the microphone stops the session; click Start again.</p>
+
+  <div class="row">
+    <button id="start" type="button" class="primary">Start</button>
+    <button id="stop" type="button" disabled>Stop</button>
+    <button id="clear" type="button">Clear transcript</button>
+  </div>
+  <p id="status" class="status" role="status" aria-live="polite">Idle.</p>
+  <p id="error" class="error" role="alert"></p>
+
+  <div class="row meter-row">
+    <div class="meter" role="meter" aria-label="Microphone level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60" id="meter"><div id="meter-fill"></div></div>
+    <span class="small"><span id="level">–</span> <span id="speaking" class="muted"></span></span>
+  </div>
+
+  <h2>Transcript</h2>
+  <ul id="transcript" class="transcript" aria-live="polite" aria-label="Transcript"></ul>
+  <p class="small muted">Grey italic rows are partial and get revised in place; regular rows are final. Each Start clears the transcript.</p>
+
+  <h2>Delay estimates</h2>
+  <dl class="stats">
+    <dt>Sound start → first partial (estimate)</dt><dd id="lag-first">n/a</dd>
+    <dt>Sound end → final (estimate)</dt><dd id="lag-final">n/a</dd>
+  </dl>
+  <p class="small muted">Rough, noise-sensitive estimates from this page's own microphone level, not model or GPU time. Shows n/a when the pairing is unclear.</p>
+
+  <details>
+    <summary>Connection details</summary>
+    <dl class="stats">
+      <dt>Model</dt><dd id="model">–</dd>
+      <dt>Server → Whisper connect</dt><dd id="connect">–</dd>
+      <dt>Session time</dt><dd id="elapsed">–</dd>
+      <dt>Audio context rate</dt><dd id="ctxrate">–</dd>
+      <dt>Chunks sent</dt><dd id="chunks">–</dd>
+      <dt>Send buffer</dt><dd id="buffered">–</dd>
+    </dl>
+    <p class="small muted">Audio is resampled in the browser to 16 kHz PCM and streamed through this Mac to Whisper. Row times count from Start. Only the last 100 rows are kept.</p>
+  </details>
+</main>
+<script type="module" src="/static/speech.js"></script>
+</body>
+</html>
