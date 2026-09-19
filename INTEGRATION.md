@@ -1,8 +1,13 @@
-# C + D integration — William / chud3
+# C + D integration — foundation snapshot
 
-Current user correction: finish **Lane C (local perception)** and **Lane D (cloud
+This is the historical integration record through `87bfbfd`, before the browser
+Remember product was added. See [README.md](README.md) and
+[the current UI guide](tools/perception_lab/REMEMBER_UI.md) for current scope and
+verification. Deployment observations below are historical, not live status.
+
+Foundation scope: finish **Lane C (local perception)** and **Lane D (cloud
 adapters/deployment)**, plus the existing testing UI; push everything to `chud3`.
-Latest user direction: build **both for R&D** and compare smoothness. The brief
+The direction at that point was to build **both for R&D** and compare smoothness. The brief
 cloud-only proposal is superseded. Measurements must name the differing local
 and cloud models and distinguish first use from warm behavior.
 Lane A world/memory/task implementation and Lane B device transport/display are
@@ -46,7 +51,7 @@ namespace IDs across restarted connections. Whisper word times are relative to
 - Final integration checks: 129 Python tests, Ruff/Pyright clean, 20 UI lifecycle
   assertions. No live TypeSafe measurements without its key.
 
-## Blocked
+## Historical blocker — resolved for the browser product
 
-- No TypeSafe key known yet. Jev may be code/contract tested without live latency
-  verification; report this limitation if it persists.
+- The foundation had no TypeSafe key and only contract-tested Jev. The later
+  browser product has completed hosted Jev fixture tests; see the current UI guide.

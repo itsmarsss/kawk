@@ -25,7 +25,7 @@ The component lab stays at `/lab`, `/faces`, `/objects`, `/speech`, `/devices`.
 ```sh
 make serve-product-ui           # uvicorn on 0.0.0.0:8081 (PORT overrides)
 open http://127.0.0.1:8081/     # Live V1 home; footer → "Demo mode" / "Testing lab"
-node tools/perception_lab/static/remember/tests/run.mjs   # 944 checks, no dependencies (also: make test-ui)
+node tools/perception_lab/static/remember/tests/run.mjs   # browser checks, no dependencies (also: make test-ui)
 ```
 
 **Explicit Start.** Nothing is captured on load. Press **Start** on Now; the browser asks for
@@ -70,8 +70,9 @@ disable camera or microphone independently, and choose backends (defaults: local
    Reminders page is unchanged.
 3b. **Ambient memory (Jev backend only).** Every finalized speech segment reaches Jev, which
    decides independently of addressedness whether the ordinary conversation is worth keeping.
-   When it is, and exactly one recognised person has been in view unchanged since the words were
-   heard, the server saves a note for that person and the transcript line gets a second tag
+   When it is, and exactly one recognised person stays in view unchanged from receipt of the
+   finalized transcript through decision application, the server saves a note for that person
+   and the transcript line gets a second tag
    beside its directed tag (*Conversation* or *For Remember* — the memory gate is independent of
    addressedness, so a device-classified sentence with no supported command can still be saved):
    **Saved to Bob** (`memory.state: 'saved'`), **Already remembered** (`duplicate`), or nothing
@@ -90,9 +91,13 @@ disable camera or microphone independently, and choose backends (defaults: local
    with the bound `target_track_id`; the UI forwards it only to the *current* faces socket. States
    shown: listening → collecting (n/5 real filtered frames) → complete (profile with the new
    gallery UUID), or ambiguous / error / cancelled. **Cancel** is available while it runs.
+   With one stable enrolled person in view, a Jev-validated introduction or name correction
+   instead renames that person while retaining the gallery UUID and notes. The profile,
+   device card and face label update together. This does not identify who spoke.
 5. **Mark moment** saves a real clip: 5 s before and after now from the server ring buffer (JPEG
    ≤5 fps, 16 kHz PCM). The engine also saves a clip automatically when a repeatedly observed
-   object category disappears (see limits below). The tile shows *Recording* until `moment.saved` arrives with the real
+   object category disappears in rules mode; Jev mode selects significant source events instead.
+   The tile shows *Recording* until `moment.saved` arrives with the real
    `/api/v1/sessions/{id}/clips/{clip}.mp4`; the dialog is a native `<video>`; the device display
    pastes frames from the same clip at ≤10 fps when an answer references it.
 6. **Stop / Cancel start** releases tracks, AudioContext, worklet, sockets and timers, sends
@@ -111,7 +116,7 @@ disable camera or microphone independently, and choose backends (defaults: local
 
 ### Honest limits of V1
 
-- Speech "directedness" and "significance" are **not judged**. Finals that match the fixed
+- In rules mode, speech directedness and semantic significance are **not judged**. Finals that match the fixed
   grammar act (`where is/are my …`, `who is this?` / `who is that?` / `who am I talking to?` /
   `identify this person` — the currently recognised person's name, notes and prior encounter,
   never a guess for an unknown face — `remind me to <verb> <Enrolled Name> about <topic>`,
@@ -121,16 +126,18 @@ disable camera or microphone independently, and choose backends (defaults: local
   nothing is remembered while Jev is unavailable).
 - Automatic notes bind conversation *context*, not a speaker: a visible face is never treated as
   evidence of who spoke, and the UI copy never claims voice identification. The gate needs exactly
-  one recognised person in view, unchanged from the moment the words were heard; two faces, an
-  unknown face, or a person who arrived after the speech all yield `not_saved`.
-- Clips come from two sources only: the manual **Mark moment** button, and one limited V1 rule in
-  `product.py`: when an object category that was observed repeatedly disappears and its
-  disappearance is confirmed, the engine saves a clip around its last observation (a
-  "where did it go" record). That is a deterministic rule, not a judgment of what matters;
-  general semantic significance is still absent.
+  one recognised person in view, unchanged from receipt of the finalized transcript through
+  decision application. Two faces, an unknown face, or a replaced target yield `not_saved`.
+  Binding does not reconstruct who was present at the start of the utterance.
+- Manual **Mark moment** works in both modes. Rules mode also records confirmed object
+  disappearance around its last observation. Jev mode instead selects significant source
+  events with the hosted decision bridge. Its bounded fixture tests do not establish
+  significance accuracy during natural use.
 - Object labels are categories from a detector; they do not identify a specific keyring.
 - Identity comes only from the gallery `stable_id`; names and track ids are never used as ids.
-- Cloud speech (Baseten Whisper) may wake from zero; the first Start can time out — retry.
+- Cloud speech (Baseten Whisper) may wake from zero. The browser allows 130 seconds for
+  readiness and makes up to five bounded reconnects with fresh stream IDs. Stop cancels
+  retries and stale audio is discarded. After retries are exhausted, press Start again.
 - Windowed SAM 3.1 (if selected) resets track ids per window; the engine re-associates by IoU.
 - **Audio/video timing in clips is approximate.** PCM chunks are stamped on the main thread as
   receipt time minus one 32 ms chunk; worklet buffering and message latency add tens of
@@ -297,7 +304,7 @@ or shows error/backoff with the server's reason. Leave the variables unset for `
 
 | Data | Where | Lifetime |
 |---|---|---|
-| Face gallery (names + embeddings) | server `data/gallery.npz` | durable; only explicit enrolment adds, only the lab deletes |
+| Face gallery (names + embeddings) | server `data/gallery.npz` | durable; enrollment adds, introductions can rename, and profile/lab deletion removes |
 | Person notes (manual and automatic) when `status.memory_persistent` is true | server SQLite next to the gallery (`product_memory.py`), keyed by gallery UUID | durable: survives reload, Reset session and server restart; Delete removes it |
 | Live session reminders/encounters/moments/clips/object notes (and all notes when `memory_persistent` is false) | server `BrowserSession` (memory + temp files) | until Reset, or 15 min idle server TTL |
 | Live UI state | in-memory store; `sessionStorage['remember.ui.v1.live.session']` per tab | tab lifetime |
@@ -329,14 +336,14 @@ or shows error/backoff with the server's reason. Leave the variables unset for `
   identity guards prevented ambiguous assignments. One no-person case received a positive
   model memory vote; the host correctly blocked it. Persisted notes survived an actual
   staging-server restart; edit/delete and fresh-session retrieval were browser-verified.
-- **Pending (not implemented anywhere):** device-directedness beyond that gate, hardware
+- **Pending in this browser V1:** device-directedness beyond that gate, hardware
   DeviceLink to real glasses, any memory beyond person notes (reminders, encounters, clips and
   object notes are still session-temporary). When they arrive they replace `product.py`'s rules
   behind the same envelopes and commands.
 
 ## Tests
 
-`node tools/perception_lab/static/remember/tests/run.mjs` (or `make test-ui`) — 944 checks: contract validation
+`node tools/perception_lab/static/remember/tests/run.mjs` (or `make test-ui`) covers contract validation
 (incl. `display.updated`, `enrollment.updated`, clip audio coverage, snapshot display), store
 ordering/session binding, demo scenes, generic live adapter, **capture lifecycle** (separate
 camera/mic acquisition, chunk timestamps, stop releases, one-in-flight, watchdogs, stale
