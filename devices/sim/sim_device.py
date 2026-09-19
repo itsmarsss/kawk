@@ -69,8 +69,32 @@ async def run_headless(
     device_id: str = "sim-headless",
     stats: Stats | None = None,
 ) -> Stats:
+    """Reconnect-with-backoff is the client's job (§5): retry until the deadline."""
     stats = stats or Stats()
     frames, pcm = load_fixtures(fixtures_dir, wav_path)
+    t_end = time.monotonic() + seconds
+    backoff = 0.5
+    while time.monotonic() < t_end:
+        try:
+            await _headless_session(hub_url, frames, pcm, fps, t_end, device_id, stats)
+            break  # ran to the deadline
+        except (OSError, websockets.WebSocketException) as e:
+            wait = min(backoff, max(0.05, t_end - time.monotonic()))
+            print(f"[sim] connection lost ({e!r}); retrying in {wait:.1f}s")
+            await asyncio.sleep(wait)
+            backoff = min(backoff * 2, 5.0)
+    return stats
+
+
+async def _headless_session(
+    hub_url: str,
+    frames: list[bytes],
+    pcm: bytes,
+    fps: float,
+    t_end: float,
+    device_id: str,
+    stats: Stats,
+) -> None:
     async with websockets.connect(hub_url, compression=None) as ws:
         await ws.send(
             json.dumps(
@@ -95,7 +119,6 @@ async def run_headless(
                         print(f"[display] {msg['template']}: {msg['title']} — {msg['body']}")
 
         recv_task = asyncio.create_task(receiver())
-        t_end = time.monotonic() + seconds
         seq_v = seq_a = 0
         frame_i = audio_off = 0
         frame_interval = 1.0 / fps
@@ -122,7 +145,6 @@ async def run_headless(
                 await asyncio.sleep(0.04)
         finally:
             recv_task.cancel()
-    return stats
 
 
 # ---- live mode ([sim] extras; verification is a morning-checklist item) ---------
@@ -142,6 +164,8 @@ def run_live(hub_url: str, camera_index: int, device_id: str = "sim-laptop") -> 
     slot_lock = threading.Lock()
     stop = threading.Event()
     card_slot: list = [None]
+    # Hub-pushed config (§5) — receiver updates it; camera + send loops honor it.
+    video_cfg = {"w": 1280, "h": 720, "fps": 12, "quality": 70}
 
     def camera_thread() -> None:
         cap = cv2.VideoCapture(camera_index, cv2.CAP_AVFOUNDATION)
@@ -158,15 +182,62 @@ def run_live(hub_url: str, camera_index: int, device_id: str = "sim-laptop") -> 
             ok, frame = cap.read()
             if not ok:
                 continue
-            frame = cv2.resize(frame, (1280, 720))
-            ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            frame = cv2.resize(frame, (video_cfg["w"], video_cfg["h"]))
+            ok, jpeg = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, int(video_cfg["quality"])]
+            )
             if ok:
                 with slot_lock:
                     frame_slot[0] = jpeg.tobytes()
         cap.release()
 
+    async def session(ws) -> None:
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "hello",
+                    "device_id": device_id,
+                    "class": "laptop",
+                    "display": {"w": 240, "h": 240},
+                    "caps": {"video": True, "audio": True},
+                }
+            )
+        )
+
+        async def receiver() -> None:
+            async for message in ws:
+                if isinstance(message, str):
+                    msg = json.loads(message)
+                    if msg.get("type") == "card":
+                        card_slot[0] = msg
+                    elif msg.get("type") == "config":
+                        video_cfg.update(msg.get("video", {}))
+
+        recv = asyncio.create_task(receiver())
+        seq_a = seq_v = 0
+        next_frame = time.monotonic()
+        try:
+            while not stop.is_set():
+                try:
+                    chunk = await asyncio.wait_for(audio_q.get(), timeout=0.1)
+                    seq_a = (seq_a + 1) & 0xFFFF
+                    await ws.send(HDR.pack(T_AUDIO, 0, seq_a, millis()) + chunk)
+                except TimeoutError:
+                    pass
+                if time.monotonic() >= next_frame:
+                    with slot_lock:
+                        jpeg = frame_slot[0]
+                        frame_slot[0] = None
+                    if jpeg is not None:
+                        seq_v = (seq_v + 1) & 0xFFFF
+                        await ws.send(HDR.pack(T_VIDEO, 0, seq_v, millis()) + jpeg)
+                    next_frame = time.monotonic() + 1 / max(1, video_cfg["fps"])
+        finally:
+            recv.cancel()
+
+    audio_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=32)
+
     async def client() -> None:
-        audio_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=32)
         loop = asyncio.get_running_loop()
 
         def audio_cb(indata, _frames, _time, status) -> None:  # PortAudio thread
@@ -185,48 +256,24 @@ def run_live(hub_url: str, camera_index: int, device_id: str = "sim-laptop") -> 
             samplerate=16000, channels=1, dtype="int16", blocksize=640, callback=audio_cb
         )
         stream.start()
-        async with websockets.connect(hub_url, compression=None) as ws:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "hello",
-                        "device_id": device_id,
-                        "class": "laptop",
-                        "display": {"w": 240, "h": 240},
-                        "caps": {"video": True, "audio": True},
-                    }
-                )
-            )
-
-            async def receiver() -> None:
-                async for message in ws:
-                    if isinstance(message, str):
-                        msg = json.loads(message)
-                        if msg.get("type") == "card":
-                            card_slot[0] = msg
-
-            recv = asyncio.create_task(receiver())
-            seq_a = seq_v = 0
-            next_frame = time.monotonic()
-            try:
-                while not stop.is_set():
-                    try:
-                        chunk = await asyncio.wait_for(audio_q.get(), timeout=0.1)
-                        seq_a = (seq_a + 1) & 0xFFFF
-                        await ws.send(HDR.pack(T_AUDIO, 0, seq_a, millis()) + chunk)
-                    except TimeoutError:
-                        pass
-                    if time.monotonic() >= next_frame:
-                        with slot_lock:
-                            jpeg = frame_slot[0]
-                            frame_slot[0] = None
-                        if jpeg is not None:
-                            seq_v = (seq_v + 1) & 0xFFFF
-                            await ws.send(HDR.pack(T_VIDEO, 0, seq_v, millis()) + jpeg)
-                        next_frame = time.monotonic() + 1 / 12
-            finally:
-                recv.cancel()
-                stream.stop()
+        backoff = 0.5
+        try:
+            # Reconnect-with-backoff is the client's job (§5): a hub restart
+            # mid-demo must never leave the glasses silently offline.
+            while not stop.is_set():
+                try:
+                    async with websockets.connect(hub_url, compression=None) as ws:
+                        backoff = 0.5
+                        await session(ws)
+                except (OSError, websockets.WebSocketException) as e:
+                    print(
+                        f"[sim] hub connection lost ({e!r}); retry in {backoff:.1f}s",
+                        file=sys.stderr,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 5.0)
+        finally:
+            stream.stop()
 
     threading.Thread(target=camera_thread, daemon=True).start()
     client_thread = threading.Thread(target=lambda: asyncio.run(client()), daemon=True)
