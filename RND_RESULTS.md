@@ -45,9 +45,11 @@ is an explicitly labeled R&D detector, not persistent incremental tracking.
 
 The first native public inference took approximately 11.6 seconds and exceeded
 the client's 10-second frame budget. Reconnecting succeeded; subsequent public
-and browser calls returned boxes. This is separate from build and model load,
-not a controlled full cold-start benchmark. Scaled-to-zero services may need a
-startup wait and another Start. See deployment verification JSON files for exact
+and browser calls returned boxes. Native model loading, including imports and
+checkpoint loading, separately took 80.3 seconds. Neither includes the complete
+deployment build/scheduling delay. These are not controlled full cold-start
+benchmarks. Scaled-to-zero SAM may need a minute or more to start, followed by
+first-inference warmup and another Start. See deployment verification JSON files for exact
 evidence, model IDs and cleanup snapshots.
 
 ## Verification and reproduction
