@@ -13,6 +13,19 @@ from remember_hub.contracts.percepts import Dimensions, FaceObservation
 from remember_hub.perception.baseten_common import checked_box, endpoint, timings
 
 
+class FaceRequestTimeout(RuntimeError):
+    """The request exceeded its deadline; the caller may skip this video frame."""
+
+
+def _is_httpx_timeout(error: Exception) -> bool:
+    # Keep importing the adapter safe without the optional cloud dependencies.
+    try:
+        import httpx
+    except ImportError:
+        return False
+    return isinstance(error, httpx.TimeoutException)
+
+
 class BasetenFaceBackend:
     def __init__(
         self,
@@ -65,7 +78,13 @@ class BasetenFaceBackend:
                 response.raise_for_status()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except TimeoutError:
+                raise FaceRequestTimeout("Baseten face request timed out; skip this frame") from None
+            except Exception as exc:
+                if _is_httpx_timeout(exc):
+                    raise FaceRequestTimeout(
+                        "Baseten face request timed out; skip this frame"
+                    ) from None
                 raise RuntimeError(
                     "Baseten face request failed; check deployment and credentials"
                 ) from None

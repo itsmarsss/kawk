@@ -2,7 +2,7 @@ import asyncio
 import base64
 
 import pytest
-from remember_hub.perception.face.baseten_http import BasetenFaceBackend
+from remember_hub.perception.face.baseten_http import BasetenFaceBackend, FaceRequestTimeout
 
 
 def payload():
@@ -87,10 +87,47 @@ async def test_face_timeout_is_bounded_and_sanitized():
     client = Client()
     client.gate = asyncio.Event()
     backend = BasetenFaceBackend("model", "secret", timeout_s=0.01, client=client)
-    with pytest.raises(RuntimeError, match="request failed") as error:
+    with pytest.raises(FaceRequestTimeout, match="timed out") as error:
         await backend.embed_faces(b"one", (640, 480))
     assert "secret" not in str(error.value)
     assert backend.last_timings_ms == {}
+    assert not backend.last_frame_accepted
+    client.gate.set()
+    assert await backend.embed_faces(b"next", (640, 480))
+
+
+@pytest.mark.parametrize("timeout_type", ["ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout"])
+async def test_face_httpx_timeouts_are_recoverable_and_sanitized(timeout_type):
+    httpx = pytest.importorskip("httpx")
+
+    class FailingClient(Client):
+        async def post(self, url, **kw):
+            raise getattr(httpx, timeout_type)("secret")
+
+    backend = BasetenFaceBackend("model", "secret", client=FailingClient())
+    with pytest.raises(FaceRequestTimeout) as error:
+        await backend.embed_faces(b"frame", (640, 480))
+    assert "secret" not in str(error.value)
+    assert not backend.last_frame_accepted
+
+
+@pytest.mark.parametrize("failure_kind", ["auth", "service", "connection"])
+async def test_face_other_request_errors_do_not_look_like_timeouts(failure_kind):
+    httpx = pytest.importorskip("httpx")
+
+    class FailingClient(Client):
+        async def post(self, url, **kw):
+            if failure_kind == "connection":
+                raise httpx.ConnectError("secret")
+            status = 401 if failure_kind == "auth" else 503
+            return httpx.Response(status, request=httpx.Request("POST", url))
+
+    backend = BasetenFaceBackend("model", "secret", client=FailingClient())
+    with pytest.raises(RuntimeError, match="check deployment") as error:
+        await backend.embed_faces(b"frame", (640, 480))
+    assert not isinstance(error.value, FaceRequestTimeout)
+    assert "secret" not in str(error.value)
+    assert not backend.last_frame_accepted
 
 
 async def test_face_cancellation_releases_inflight_lock():
