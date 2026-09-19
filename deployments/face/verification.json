@@ -13,6 +13,14 @@
   "first_cold_request_ms": 2374.5381250046194,
   "first_cold_handler_ms": 1353.7653419189155,
   "scope": "One actual request after owned deployment activation. Not a warm latency or identity-accuracy study. Parent conducts separate identical-fixture warm comparison.",
-  "restore_target": "INACTIVE after bounded experiment",
-  "cleanup_status": "Pending parent browser verification; independently guarded"
+  "cleanup_status": "verified SCALED_TO_ZERO; zero active replicas; owned guard cancelled",
+  "cleanup_verified_at": "2026-09-19T12:09:02.795179+00:00",
+  "status": "SCALED_TO_ZERO",
+  "active_replica_count": 0,
+  "autoscaling": {
+    "min_replica": 0,
+    "max_replica": 1,
+    "scale_down_delay": 60
+  },
+  "future_requests": "Manual inference wakes this owned deployment and incurs cold-start delay and usage; 60-second idle scale-down remains enabled."
 }

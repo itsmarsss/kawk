@@ -1,8 +1,11 @@
 # Cloud buffalo_l face backend
 
 The existing owned experiment is model `qvm6y6eq`, production deployment `32z5mm9`
-on Team2. It is normally **INACTIVE**. Activation is billable; the scoped test
-reactivates it temporarily and returns it to INACTIVE. Never change Whisper.
+on Team2. After the scoped test it was verified **SCALED_TO_ZERO**, with zero
+active replicas, min=0/max=1 and a 60-second idle scale-down delay. It remains
+callable for user-initiated tests: inference can wake a GPU, incur usage and take
+longer than the normal warm request timeout. Report warming separately from an
+empty detection; retry after the service is ready. Never change Whisper.
 
 The included Truss preserves the already-verified service protocol:
 
@@ -40,10 +43,13 @@ uv run --extra cloud python scripts/smoke_face.py --jpeg /path/to/640px.jpg \
 Replace dimensions with the actual JPEG dimensions. Set `BASETEN_API_KEY` on the server;
 the optional `--native-profile`
 switch reads only the primary `h100-permanent` profile and never prints its key.
-Keep deployment actions explicit: smoke scripts issue inference, not activation.
+Keep deployment actions explicit: smoke scripts issue inference, which can wake a
+scaled-to-zero service; they do not reactivate a deployment marked INACTIVE.
 
 Deploying a new copy is optional; reusing the existing experiment avoids duplicate
-H100 allocations. Use an independent deadline guard before activation. Deactivation:
+H100 allocations. Use an independent deadline guard before activation. Preserve
+the guard until zero active replicas is verified. If prompt idle release fails,
+deactivate the owned deployment explicitly:
 
 ```sh
 baseten model deployment deactivate --model-id qvm6y6eq --deployment-id 32z5mm9 \

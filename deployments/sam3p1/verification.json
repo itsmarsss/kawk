@@ -1,0 +1,59 @@
+{
+  "verified": true,
+  "scope": "new sequential fixture JPEGs over real worker-loopback WS; no future frames supplied; not webcam or Mac/WAN latency",
+  "allocated_shape": "H100x16x118 (1 H10080GiB,16vCPU,118GiBhostRAM)",
+  "total_fixture_updates": 11,
+  "setup_seconds": 21.483089849352837,
+  "model_load_seconds": 16.632657507434487,
+  "one_frame_one_concept": {
+    "first_ms": 1452.0520456135273,
+    "warm_median_ms": 155.72507493197918,
+    "warm_range_ms": [
+      147.8149201720953,
+      169.95459608733654
+    ],
+    "warm_n": 3
+  },
+  "one_frame_three_concepts": {
+    "median_ms": 412.63301111757755,
+    "n": 3
+  },
+  "growing_history_one_concept": {
+    "window_lengths": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "roundtrip_ms": [
+      147.5693490356207,
+      291.41864366829395,
+      342.1952947974205,
+      449.5826084166765
+    ]
+  },
+  "all_updates_closed_sessions": true,
+  "final_memory": {
+    "allocated_gib": 3.6886367797851562,
+    "reserved_gib": 6.416015625,
+    "peak_allocated_gib": 5.975826263427734,
+    "active_sessions": 0
+  },
+  "limitations": [
+    "worker-loopback only; no Mac/WAN or webcam latency",
+    "small fixture sample; no long-running memory stability or accuracy evaluation",
+    "windowed reinitialization; no persistent identities",
+    "native Truss endpoint verification recorded separately"
+  ],
+  "offline_server_tests_passed": 18,
+  "checkpoint_sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6",
+  "code_revision": "2345a4ad109ac29c569da749c91d84f10dc08c40",
+  "checkpoint_strict_load": true,
+  "native_endpoint_verified": false,
+  "native_status": "final explicit-checkpoint-path image building; public endpoint not yet verified",
+  "evidence_bundle": "sam31-windowed/results.json, setup.json, pip-freeze.txt,11 JPEG overlays (kept outside Git)",
+  "native_packaging_regressions": [
+    "direct managed entry-file import without package context",
+    "absolute entry imports; python3 build executable; commit-pinned HF build download"
+  ]
+}

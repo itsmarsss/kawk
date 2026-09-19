@@ -1,0 +1,40 @@
+model_name: remember-sam31-windowed
+python_version: py312
+requirements:
+  - torch==2.10.0
+  - torchvision==0.25.0
+  - numpy>=1.26,<2
+  - setuptools<81
+  - huggingface_hub
+  - einops
+  - pillow
+  - decord
+  - pycocotools
+  - opencv-python-headless<4.12
+  - scipy
+  - git+https://github.com/facebookresearch/sam3.git@2345a4ad109ac29c569da749c91d84f10dc08c40
+system_packages:
+  - git
+  - libgl1
+  - libglib2.0-0
+resources:
+  accelerator: H100
+  use_gpu: true
+  cpu: '4'
+  memory: 32Gi
+runtime:
+  transport:
+    kind: websocket
+  predict_concurrency: 1
+environment_variables:
+  SAM31_WINDOW_SIZE: '1'
+  SAM31_CHECKPOINT: /opt/sam31-model/sam3.1_multiplex.pt
+  TOKENIZERS_PARALLELISM: 'false'
+build_commands:
+  # The legacy model_cache warmer assumes refs/ exists even for commit-pinned
+  # HF snapshots. Download inside the final image instead; the runtime resolves
+  # this exact revision offline and verifies its SHA256 before loading.
+  - >-
+    python3 -c "from huggingface_hub import hf_hub_download;
+    hf_hub_download('AEmotionStudio/sam3.1', 'sam3.1_multiplex.pt',
+    revision='694239a1479aab8fd1317c87c433c58acd7c6eab', local_dir='/opt/sam31-model')"
