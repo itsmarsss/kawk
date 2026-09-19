@@ -9,8 +9,8 @@ test:
 	$(UV) run pytest -q
 
 lint:
-	$(UV) run ruff check hub
-	$(UV) run ruff format --check hub
+	$(UV) run ruff check hub devices scripts
+	$(UV) run ruff format --check hub devices scripts
 
 typecheck:
 	$(UV) run pyright
