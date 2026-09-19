@@ -17,7 +17,6 @@ from urllib.parse import urlsplit
 os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
-import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,7 +29,7 @@ from .product_decisions import MODEL as JEV_MODEL
 from .product_decisions import backend_from_environment
 from .product_memory import NoteMemory, memory_path_for_gallery
 from .product_routes import ProductSessions
-from .speech import METADATA, MODEL_ID, read_key, transcript_event
+from .speech import MODEL_ID, cloud_speech_socket, read_key
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -312,75 +311,7 @@ async def speech_socket(ws: WebSocket):
     if name == "local":
         await local_speech_socket(ws)
         return
-    tasks = []
-    try:
-        await ws.send_json({"type": "connecting"})
-        key = read_key()
-        started = time.perf_counter()
-        url = f"wss://model-{MODEL_ID}.api.baseten.co/environments/production/websocket"
-        async with websockets.connect(url, additional_headers={"Authorization": "Bearer " + key},
-                                      open_timeout=120, close_timeout=3, compression=None,
-                                      max_size=2_000_000, max_queue=4) as upstream:
-            await upstream.send(json.dumps(METADATA))
-            await ws.send_json({"type": "ready", "backend": "baseten", "model": "Whisper Large v3 streaming",
-                                "connect_ms": (time.perf_counter() - started) * 1000,
-                                "sample_rate": 16000, "chunk_samples": 512,
-                                "model_id": MODEL_ID, "max_session_s": MAX_SESSION_S})
-            connected = time.perf_counter()
-
-            async def send_audio():
-                while True:
-                    message = await ws.receive()
-                    if message["type"] == "websocket.disconnect":
-                        return "disconnected"
-                    if message.get("bytes") is not None:
-                        chunk = message["bytes"]
-                        if len(chunk) != 1024:
-                            raise ValueError("Audio must be exactly 512 samples of 16 kHz mono PCM16 (1024 bytes)")
-                        await asyncio.wait_for(upstream.send(chunk), timeout=1.5)
-                    elif message.get("text") is not None:
-                        control = json.loads(message["text"])
-                        if isinstance(control, dict) and control.get("type") == "stop":
-                            return "stop"
-                        raise ValueError("Unknown speech control")
-
-            async def receive_text():
-                async for raw in upstream:
-                    event = transcript_event(raw)
-                    if event is not None:
-                        event["hub_received_ms"] = (time.perf_counter() - connected) * 1000
-                        await ws.send_json(event)
-
-            sender = asyncio.create_task(send_audio())
-            receiver = asyncio.create_task(receive_text())
-            tasks = [sender, receiver]
-            done, _ = await asyncio.wait(tasks, timeout=MAX_SESSION_S, return_when=asyncio.FIRST_COMPLETED)
-            if not done:
-                await ws_error(ws, "Ten-minute test session finished. Start again to continue.")
-            elif sender in done and await sender == "stop":
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(receiver), timeout=2)
-            elif receiver in done:
-                await receiver
-                await ws_error(ws, "Whisper closed the connection. Start again to reconnect.")
-            # Cancel before leaving the upstream context so no tasks outlive sockets.
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-    except (WebSocketDisconnect, websockets.ConnectionClosed):
-        pass
-    except (ValueError, RuntimeError) as error:
-        await ws_error(ws, str(error))
-    except Exception as error:
-        # Do not serialize upstream exceptions that might contain auth headers.
-        await ws_error(ws, f"Whisper connection failed ({type(error).__name__}). Retry or check deployment status.")
-    finally:
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        with contextlib.suppress(Exception):
-            await ws.close()
+    await cloud_speech_socket(ws, max_session_s=MAX_SESSION_S)
 
 
 @app.websocket("/ws/objects")

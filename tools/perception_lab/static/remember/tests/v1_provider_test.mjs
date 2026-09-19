@@ -563,3 +563,76 @@ export async function run() {
     eq(seen.at(-1), null, 'face stream failure clears the overlay');
   }
 }
+
+
+/** Speech reconnect: the provider retires the old stream id and announces the new one. */
+export async function runSpeechReconnect() {
+  const tickAll = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  const startAndAck = async (r, w) => {
+    const pr = r.provider.startCapture(SETTINGS);
+    await tickAll();
+    const a = w.json().filter((m) => m.type === 'command' && m.command.type === 'capture.status').at(-1);
+    w.message({ type: 'v1.ack', request_id: a.request_id, receipt: { ok: true } });
+    await pr;
+  };
+  console.log('\n# v1 provider: speech reconnect retires the old id and announces the new one');
+  {
+    const r = rig();
+    const w = await connected(r);
+    await startAndAck(r, w);
+    const sp = r.made.speech[0];
+    sp.opts.onStatus({ phase: 'running', ready: { model_id: 'x' }, streamId: 'speech_a' });
+    let states = () => w.json().filter((m) => m.type === 'stream.state' && m.kind === 'speech');
+    eq(states().at(-1), { type: 'stream.state', kind: 'speech', available: true, stream_id: 'speech_a' }, 'first running announces the status stream id');
+    eq(r.provider.getLiveStatus().streams.speech.streamId, 'speech_a', 'live status shows the announced id');
+    sp.opts.onTranscript({ type: 'transcript', segment_id: 0, text: 'hi', is_final: true }, { streamId: 'speech_a' });
+
+    sp.opts.onStatus({ phase: 'reconnecting', streamId: null, previousStreamId: 'speech_a', attempt: 1, maxAttempts: 5, retryInMs: 1000, message: 'Speech connection closed. Reconnecting…' });
+    eq(states().at(-1), { type: 'stream.state', kind: 'speech', available: false, stream_id: 'speech_a' }, 'reconnecting retires the previous stream id');
+    const st = r.provider.getLiveStatus().streams.speech;
+    eq([st.phase, st.streamId, st.attempt], ['reconnecting', null, 1], 'live status is reconnecting with no id');
+    check(/Reconnecting/.test(st.message), 'reconnecting message forwarded to the UI');
+    check(r.provider.capturing, 'capture stays active while speech reconnects');
+    check(!r.notices.some((n) => /Speech/.test(n.message)), 'a retry is not surfaced as an error notice');
+    eq(states().length, 2, 'no extra stream.state while waiting');
+
+    sp.opts.onStatus({ phase: 'connecting', streamId: 'speech_b', attempt: 1, message: 'Reconnecting to the speech service (attempt 1 of 5)…' });
+    eq(states().length, 2, 'connecting does not announce availability');
+    eq(r.provider.getLiveStatus().streams.speech.streamId, 'speech_b', 'connecting status carries the new id');
+    sp.opts.onStatus({ phase: 'running', ready: { model_id: 'x' }, streamId: 'speech_b', attempt: 1 });
+    eq(states().at(-1), { type: 'stream.state', kind: 'speech', available: true, stream_id: 'speech_b' }, 'running after reconnect announces the new id only once ready');
+    eq(states().filter((m) => m.available).length, 2, 'exactly one availability per connection');
+    sp.opts.onTranscript({ type: 'transcript', segment_id: 0, text: 'again', is_final: true }, { streamId: 'speech_b' });
+    const ts = w.json().filter((m) => m.type === 'perception.speech');
+    eq(ts.map((m) => m.stream_id), ['speech_a', 'speech_b'], 'transcripts carry their own connection id');
+    check(r.made.faces[0].stopped === false && r.made.objects[0].stopped === false, 'faces/objects untouched by a speech reconnect');
+
+    // exhaustion → error notice + unavailable for the last id
+    sp.opts.onStatus({ phase: 'error', streamId: 'speech_b', attempt: 5, retryable: true, message: 'Speech connection closed. Speech gave up after 5 reconnect attempts' });
+    eq(states().at(-1), { type: 'stream.state', kind: 'speech', available: false, stream_id: 'speech_b' }, 'terminal error retires the last id');
+    check(r.notices.some((n) => /gave up/.test(n.message)), 'exhaustion surfaces as a notice');
+    eq(r.provider.getLiveStatus().streams.speech.phase, 'error', 'live status error');
+    check(r.provider.capturing, 'capture (camera/faces) stays up after speech gives up');
+    r.provider.stopCapture();
+  }
+  {
+    // a stale (previous-generation) speech stream reporting 'reconnecting' may only retire its own id
+    const r = rig();
+    const w = await connected(r);
+    await startAndAck(r, w);
+    const old = r.made.speech[0];
+    old.opts.onStatus({ phase: 'running', ready: {}, streamId: 'speech_old' });
+    r.provider.stopCapture();
+    await startAndAck(r, w);
+    const fresh = r.made.speech[1];
+    fresh.opts.onStatus({ phase: 'running', ready: {}, streamId: 'speech_new' });
+    const before = w.json().length;
+    old.opts.onStatus({ phase: 'reconnecting', streamId: null, previousStreamId: 'speech_old', attempt: 1, message: 'x' });
+    old.opts.onStatus({ phase: 'running', ready: {}, streamId: 'speech_old2' });
+    const after = w.json().slice(before);
+    eq(after, [{ type: 'stream.state', kind: 'speech', available: false, stream_id: 'speech_old' }], 'stale reconnecting retires only its own old id; stale running announces nothing');
+    const st = r.provider.getLiveStatus().streams.speech;
+    eq([st.phase, st.streamId], ['running', 'speech_new'], 'live status still tracks the current stream');
+    r.provider.stopCapture();
+  }
+}

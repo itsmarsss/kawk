@@ -26,7 +26,7 @@ from .product_decisions import DecisionEvent, V1DecisionBridge
 
 class BrowserSession:
     def __init__(self, gallery_people, *, decision_backend=None, note_memory=None, delete_person=None,
-                 on_note_change=None):
+                 on_note_change=None, rename_person=None):
         self.id = uuid.uuid4().hex
         self.created_at = self.last_used = time.time()
         self.queue = asyncio.Queue(maxsize=256)
@@ -58,6 +58,7 @@ class BrowserSession:
             auto_capture_rules=decision_backend is None,
             on_decision_event=self._decision_source,
             note_memory=note_memory,
+            rename_person=rename_person,
         )
         self._persisted_note_profiles = {
             ident: note["profile_id"] for ident, note in self.product.notes.items()
@@ -483,6 +484,7 @@ class ProductSessions:
         try:
             session = BrowserSession(self.gallery.list(), decision_backend=backend,
                                      note_memory=self.note_memory, delete_person=self.delete_person,
+                                     rename_person=self.rename_person,
                                      on_note_change=self.sync_person_note)
         except (ValueError, RuntimeError) as exc:
             if backend is not None:
@@ -522,6 +524,18 @@ class ProductSessions:
                 session.decision_sources.clear()
                 session.last_decision_state = ""
         return deleted
+
+    def rename_person(self, person_id: str, name: str):
+        """Persist the name on the existing UUID, then refresh every open tab."""
+        try:
+            person = self.gallery.rename(person_id, name)
+        except OSError as exc:
+            raise RuntimeError("Could not save the name; please introduce yourself again") from exc
+        for session in self.sessions.values():
+            if not session.closed:
+                session.product.refresh_person(person)
+                session.last_decision_state = ""
+        return person
 
     async def snapshot(self, session_id: str):
         return self.get(session_id).product.snapshot()

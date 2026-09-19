@@ -186,10 +186,10 @@ function enrollmentPanel(ctx) {
   const e = state.enrollment;
   const canIntroduce = live?.capturing && live.streams?.faces?.phase === 'running';
   const activeEnroll = e && ['listening', 'collecting'].includes(e.status);
-  const input = h('input#intro-name', { type: 'text', maxLength: 80, placeholder: 'Their name', 'aria-label': 'Name of the one unknown person in view', disabled: !canIntroduce });
+  const input = h('input#intro-name', { type: 'text', maxLength: 80, placeholder: 'Their name', 'aria-label': 'Name of the one person in view', disabled: !canIntroduce });
   return h('section.card', { 'aria-labelledby': 'enroll-h' },
-    h('div.section-head', h('h2#enroll-h', 'Introduce someone'), h('span.tiny.muted', 'enrols one bound face into the real gallery')),
-    e ? h('p.enroll-state', { class: e.status, 'aria-live': 'polite' }, h('strong', enrollLabel(e)), e.message ? ` — ${e.message}` : '', e.collected != null && e.required ? ` (${e.collected}/${e.required} frames)` : '') : h('p.muted.small', 'Needs exactly one stable, unrecognised face in view. Say “Hi, I’m …” with the speech stream on, or type the name here.'),
+    h('div.section-head', h('h2#enroll-h', 'Introduce someone'), h('span.tiny.muted', 'names or renames the one person in view')),
+    e ? h('p.enroll-state', { class: e.status, 'aria-live': 'polite' }, h('strong', enrollLabel(e)), e.message ? ` — ${e.message}` : '', e.collected != null && e.required ? ` (${e.collected}/${e.required} frames)` : '') : h('p.muted.small', 'Needs exactly one steady face in view. Say “My name is …” with the speech stream on and their profile and camera label update automatically — a new person is added, a known person keeps their notes. Or type the name here.'),
     h('form.ask', { onSubmit: (ev) => { ev.preventDefault(); const name = input.value.trim(); if (!name) return; actions.live.introduce(name); input.value = ''; } },
       input, h('button', { type: 'submit', disabled: !canIntroduce }, 'Introduce'),
       activeEnroll ? h('button.quiet', { type: 'button', onClick: actions.live.cancelEnrollment }, 'Cancel') : null));

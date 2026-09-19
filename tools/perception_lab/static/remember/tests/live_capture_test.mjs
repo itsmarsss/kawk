@@ -302,10 +302,14 @@ export async function run() {
     capture.emitChunk();
     eq(ws.binarySent().length, 1, 'over 16384 buffered does not send');
     const term = statuses.filter((s) => s.phase === 'stopped' || s.phase === 'error');
-    eq(term.map((s) => s.phase), ['error'], 'backlog stops with error');
-    eq(term[0].message, 'Audio backlog over 512 ms; stopped speech instead of adding lag', 'backlog message');
+    eq(term.length, 0, 'backlog does not end the session (it reconnects; see speech_reconnect_test)');
+    const rc = statuses.filter((s) => s.phase === 'reconnecting');
+    eq(rc.length, 1, 'backlog drops the connection and schedules a reconnect');
+    check(/Audio backlog over 512 ms/.test(rc[0].message), 'backlog message');
     eq(ws.readyState, 3, 'backlog closes at once (no flush)');
     eq(capture.listenerCount(), 0, 'backlog unsubscribes chunks');
+    stream.stop();
+    eq(clock.pending(), 0, 'stop cancels the retry');
   }
   {
     // stop while CONNECTING closes at once
@@ -546,16 +550,22 @@ export async function run() {
     await stream.start();
     FakeWebSocket.instances[0].open();
     FakeWebSocket.instances[0].message({ type: 'connecting' });
-    fc.advance(19_999);
-    eq(statuses.filter((s) => s.phase === 'error').length, 0, 'speech still waiting at 19.999 s');
+    fc.advance(129_999);
+    eq(statuses.filter((s) => s.phase === 'error' || s.phase === 'reconnecting').length, 0, 'speech still waiting at 129.999 s (server upstream open_timeout is 120 s)');
     fc.advance(1);
     const term = statuses.filter((s) => s.phase === 'stopped' || s.phase === 'error');
-    eq(term.map((s) => s.phase), ['error'], 'speech ready watchdog fires once');
-    check(/20 s/.test(term[0].message) && /waking from zero/.test(term[0].message), 'speech watchdog message mentions waking from zero');
-    // a stale ready after the watchdog must not start anything
-    const capture = makeCapture(clock);
-    eq(capture.listenerCount(), 0, 'no chunk subscription after watchdog');
+    eq(term.length, 0, 'speech ready watchdog does not end the session');
+    const rc = statuses.filter((s) => s.phase === 'reconnecting');
+    eq(rc.length, 1, 'speech ready watchdog schedules one reconnect');
+    check(/130 s/.test(rc[0].message) && /waking from zero/.test(rc[0].message), 'speech watchdog message mentions waking from zero');
+    eq(FakeWebSocket.instances[0].readyState, 3, 'watchdog closes the socket');
+    // a stale ready on the dead socket must not start anything
+    const ws0 = FakeWebSocket.instances[0];
+    ws0.onmessage?.({ data: JSON.stringify({ type: 'ready' }) });
+    eq(statuses.filter((s) => s.phase === 'running').length, 0, 'stale ready after the watchdog starts nothing');
+    stream.stop();
+    eq(term.length + statuses.filter((s) => s.phase === 'stopped').length, 1, 'stop after the watchdog ends once');
     fc.advance(60_000);
-    eq(term.length, 1, 'nothing after the watchdog');
+    eq(FakeWebSocket.instances.length, 1, 'nothing after stop');
   }
 }

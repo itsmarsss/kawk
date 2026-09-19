@@ -158,7 +158,8 @@ class ProductSession:
                  control: Callable[[JSON], None] | None = None,
                  auto_capture_rules: bool = True,
                  on_decision_event: Callable[[JSON], None] | None = None,
-                 note_memory=None):
+                 note_memory=None,
+                 rename_person: Callable[[str, str], JSON] | None = None):
         if not isinstance(auto_capture_rules, bool):
             raise ValueError("auto_capture_rules must be boolean")
         self.session_id = text(session_id, "session_id", 128)
@@ -167,6 +168,7 @@ class ProductSession:
         self.auto_capture_rules = auto_capture_rules
         self.on_decision_event = on_decision_event
         self.note_memory = note_memory
+        self.rename_person = rename_person
         self._conversation_seen: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._deleted_notes: OrderedDict[str, None] = OrderedDict()
         self.created_at = self.clock()
@@ -195,6 +197,7 @@ class ProductSession:
         self._answer_observation: float | None = None
         self._face_count = 0
         self._unknown_tracks: set[str] = set()
+        self._observed_face_tracks: set[str] = set()
         self._candidate: JSON | None = None
         self._display_key: str | None = None
         self._profile_key: str | None = None
@@ -265,6 +268,7 @@ class ProductSession:
         self.tracks.clear()
         self.presence.clear()
         self._unknown_tracks.clear()
+        self._observed_face_tracks.clear()
         self.foreground = self._candidate = self._profile_key = None
         self._emit("session.started", {"status": self._status()})
         self._idle()
@@ -363,6 +367,7 @@ class ProductSession:
             return False
         self._face_count = count
         self._unknown_tracks.clear()
+        self._observed_face_tracks.clear()
         stream = self.streams["faces"]
         for row, coords in parsed:
             track_id = str(row.get("track_id", ""))
@@ -371,9 +376,10 @@ class ProductSession:
             known = row.get("stable_id")
             ident = known if isinstance(known, str) and known in self.profiles and self.profiles[known]["kind"] == "person" else None
             key = f"faces:{stream.stream_id}:{track_id}"
+            self._observed_face_tracks.add(key)
             old = self.tracks.get(key)
             track = Track(key, "faces", coords, ident, "person", stream.clock, observed,
-                          (old.sightings + 1) if old else 1, track_id)
+                          (old.sightings + 1) if old and old.profile_id == ident else 1, track_id)
             self.tracks[key] = track
             if ident:
                 self._encounter(ident, observed, "In view", "faces")
@@ -542,7 +548,7 @@ class ProductSession:
         body = self._profile_body(ident)
         reminder = next(iter(self._due(ident)), None)
         self._candidate = self._action("profile", profile["name"], body, reminder=reminder)
-        key = f"profile:{self.active.get(ident)}:{body}:{reminder and (reminder['id'], reminder['text'])}"
+        key = f"profile:{self.active.get(ident)}:{profile['name']}:{body}:{reminder and (reminder['id'], reminder['text'])}"
         if key == self._profile_key and not force:
             return
         self._profile_key = key
@@ -651,7 +657,7 @@ class ProductSession:
                 "recorded_at": self.clock(), "foreground": self.foreground,
                 "identity_target": self._live_person_target(),
                 "conversation_target": self._conversation_target(),
-                "intro_targets": tuple(sorted(self._unknown_tracks)),
+                "intro_target": self._introduction_binding(),
                 "face_stream_id": self.streams["faces"].stream_id}
             while len(self._pending_speech) > 32:
                 self._pending_speech.popitem(last=False)
@@ -730,8 +736,8 @@ class ProductSession:
         if not rule or intent != rule[0]:
             return memory_saved
         if intent == "introduction":
-            if (not decision["allow_introduction"] or not pending["intro_targets"]
-                    or pending["intro_targets"] != tuple(sorted(self._unknown_tracks))
+            if (not decision["allow_introduction"] or not pending["intro_target"]
+                    or pending["intro_target"] != self._introduction_binding()
                     or pending["face_stream_id"] != self.streams["faces"].stream_id):
                 return False
         elif not decision["directed"]:
@@ -823,6 +829,10 @@ class ProductSession:
                      for p in self.profiles.values() if p.get("last_seen_at")][-4:]
         has_person = bool(people)
         introduction_target, _ = self._introduction_target()
+        latest_final = next((row["text"] for row in reversed(self._recent_transcripts.values())
+                             if row["is_final"] and now - row["recorded_at"] <= 10), "")
+        intro_rule = self._parse(latest_final)
+        intro_name = intro_rule[1] if intro_rule and intro_rule[0] == "introduction" else None
         conversation_target = self._conversation_target()
         memory_context = ({"name": self.profiles[conversation_target[0]]["name"],
                            "attribution": "conversation context only; speaker unknown"}
@@ -836,6 +846,7 @@ class ProductSession:
                 f"DISPLAY {self.display['card']['template']}({display_age})",
                 "PEOPLE " + (" · ".join(people) or "none currently observed"),
                 "INTRODUCTION_TARGET=" + introduction_target,
+                "INTRODUCTION_NAME_CANDIDATE " + json.dumps(intro_name, ensure_ascii=False),
                 "MEMORY_TARGET " + json.dumps(memory_context, ensure_ascii=False),
                 "ALREADY_REMEMBERED " + json.dumps(remembered, ensure_ascii=False),
                 "OBJECTS " + (" · ".join(objects) or "none currently observed"),
@@ -859,9 +870,6 @@ class ProductSession:
             return "find", found[1].strip().lower()
         if re.fullmatch(r"(?:please )?(?:who(?: is|'s) (?:this|that)(?: person)?|who am I (?:speaking|talking) (?:to|with)|identify (?:this|that)(?: person)?)", normalized, re.I):
             return "identify", ""
-        intro = re.fullmatch(r"(?:(?:hi|hello|hey)[,!]?\s+)?(?:I'm|I am|my name is|this is|that's|(?:their|her|his) name(?: is|'s))\s+(.+)", normalized, re.I)
-        if intro:
-            return "introduction", intro[1].strip()
         if re.fullmatch(r"(?:please )?(?:clear (?:the )?display|clear (?:the )?screen)", normalized, re.I):
             return "clear", ""
         reminder = re.fullmatch(r"(?:please[, ]+)?remind\s+me\s+to\s+(.+)", normalized, re.I)
@@ -873,6 +881,13 @@ class ProductSession:
         recall = re.fullmatch(r"(?:recall|show|what are) (?:my |the )?notes(?: about (.+))?", normalized, re.I)
         if recall:
             return "recall", (recall[1] or "").strip()
+        intro = re.search(r"\b(?:I'm|I am|my name(?: is|'s)|I go by|you can call me|this is|that's|(?:their|her|his) name(?: is|'s))\s+(.+)", normalized, re.I)
+        if intro:
+            # Only propose text actually spoken. Jev validates this exact candidate
+            # and its attribution; a name mention alone is never a naming decision.
+            candidate = re.split(r"[,;.!?]|\s+(?:and|but|from|nice|here|by the way|I|who|we|it's|working|studying)\b",
+                                 intro[1], maxsplit=1, flags=re.I)[0].strip()
+            return "introduction", candidate or intro[1].strip()
         return None
 
     def _live_profile_target(self) -> str | None:
@@ -906,8 +921,8 @@ class ProductSession:
                 answer["text"] = "Start the camera before introducing someone. No profile was created."
             else:
                 result = self._introduction(target)
-                answer.update(kind="found" if result["status"] == "collecting" else "not_found", text=result["message"])
-                handled_display = result["status"] in ("collecting", "listening")
+                answer.update(kind="found" if result["status"] in ("collecting", "complete") else "not_found", text=result["message"])
+                handled_display = result["status"] in ("collecting", "listening", "complete")
         elif kind == "identify":
             ident = self._live_person_target()
             if ident:
@@ -992,21 +1007,32 @@ class ProductSession:
     def _introduction_target(self) -> tuple[str, list[Track]]:
         """Same categorical eligibility for gate context and enrollment execution."""
         stream = self.streams["faces"]
-        if not stream.available or stream.received_at is None or self.clock() - stream.received_at > 1:
+        if (self.capture["camera"] != "live" or not stream.available or stream.received_at is None
+                or self.clock() - stream.received_at > 1):
             return "none", []
-        candidates = [self.tracks[key] for key in self._unknown_tracks if key in self.tracks
-                      and self.tracks[key].sightings >= 3 and self.streams["faces"].clock - self.tracks[key].last_clock <= .5]
+        candidates = [track for track in self.tracks.values() if track.key in self._observed_face_tracks
+                      and track.sightings >= 3 and stream.clock - track.last_clock <= .5]
         if self._face_count > 1 or len(candidates) > 1:
             return "ambiguous", []
         if self._face_count == 1 and len(candidates) == 1:
-            return "single_stable_unknown", candidates
+            return ("single_stable_known" if candidates[0].profile_id else "single_stable_unknown"), candidates
         return "none", []
+
+    def _introduction_binding(self) -> tuple[str, str | None] | None:
+        _, candidates = self._introduction_target()
+        return (candidates[0].key, candidates[0].profile_id) if len(candidates) == 1 else None
+
+    def refresh_person(self, person: JSON) -> None:
+        ident = self._gallery_profile(person)
+        self._last_answer = None
+        if self.foreground == ident:
+            self._profile_card(ident, force=True)
 
     def _introduction(self, name: str) -> JSON:
         target_state, candidates = self._introduction_target()
         stream = self.streams["faces"]
-        if target_state != "single_stable_unknown":
-            return self._enrollment_event("ambiguous", "An introduction needs exactly one stable unknown face in view. No profile was created.")
+        if target_state not in ("single_stable_unknown", "single_stable_known"):
+            return self._enrollment_event("ambiguous", "An introduction needs exactly one stable face in view. No name was changed.")
         target = candidates[0].source_track
         name = text(name, "name", 160).strip('"“”').rstrip(".!? ").replace("’", "'")
         named = self._parse(name)
@@ -1025,6 +1051,17 @@ class ProductSession:
                 self._show(self._enroll_candidate, "enroll:prompt")
                 return result
         clean = text(name, "name", 80).title()
+        ident = candidates[0].profile_id
+        if ident:
+            if self.rename_person is None:
+                return self._enrollment_event("error", "Profile name updates are not connected")
+            try:
+                person = self.rename_person(ident, clean)
+            except (ValueError, RuntimeError) as exc:
+                return self._enrollment_event("error", str(exc))
+            if self.profiles[ident]["name"] != clean:
+                self.refresh_person(person)
+            return self._enrollment_event("complete", f"Name updated to {clean}", profile_id=ident, name=clean)
         if self.control is None:
             return self._enrollment_event("error", "Enrollment control is not connected")
         if self.enrollment and not self.enrollment.waiting_name:

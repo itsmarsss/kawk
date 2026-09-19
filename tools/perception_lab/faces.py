@@ -70,6 +70,22 @@ class Gallery:
             raise
         return True
 
+    def rename(self, person_id, name):
+        name = name.strip()
+        if not 1 <= len(name) <= 80 or any(ord(char) < 32 for char in name):
+            raise ValueError("Enter a name of 1–80 characters")
+        if person_id not in self.entries:
+            raise ValueError("This person is no longer enrolled")
+        previous = self.entries[person_id]
+        if previous[0] != name:
+            self.entries[person_id] = (name, previous[1])
+            try:
+                self.save()
+            except OSError:
+                self.entries[person_id] = previous
+                raise
+        return {"id": person_id, "name": name}
+
     def match(self, embedding, threshold=0.40):
         if not self.entries:
             return {"id": None, "name": None, "similarity": None}

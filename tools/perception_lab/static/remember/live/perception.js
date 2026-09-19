@@ -20,7 +20,12 @@ export const OBJECTS_READY_TIMEOUT_MS = 15000;
 export const OBJECTS_DEFAULT_RESPONSE_TIMEOUT_MS = 5000;
 export const OBJECTS_MIN_RESPONSE_TIMEOUT_MS = 5000;
 export const OBJECTS_MAX_RESPONSE_TIMEOUT_MS = 15000;
-export const SPEECH_READY_TIMEOUT_MS = 20000;
+// The server waits up to 120 s for the upstream Whisper socket (open_timeout=120 in server.py);
+// a cold Baseten replica routinely needs most of that, so the client deadline must exceed it.
+export const SPEECH_READY_TIMEOUT_MS = 130000;
+export const SPEECH_RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000];
+export const SPEECH_MAX_RECONNECTS = 5;          // consecutive failed attempts before giving up
+export const SPEECH_RECONNECT_RESET_MS = 30000;  // a run that lasted this long resets the counter
 export const SPEECH_MAX_BUFFERED_BYTES = 16384; // 512 ms of 16 kHz PCM16
 export const SPEECH_CHUNK_BYTES = 1024;
 export const SPEECH_FLUSH_CHUNKS = 16;          // 500 ms of zero PCM
@@ -363,8 +368,24 @@ export function createObjectsStream({ backend = 'local', vocabulary = [], captur
 }
 
 // ---- speech ----------------------------------------------------------------------------
+// One start() opens a speech SESSION that lives until stop(). A session is a sequence of
+// connection attempts; each attempt is a normal core run with its own unique streamId. A retryable
+// failure (ready watchdog, transport close, WebSocket error, audio backlog, server error without
+// `retryable: false`) schedules the next attempt with bounded backoff while the session is active.
+// Consumers see: connecting → (running | reconnecting{previousStreamId, attempt}) … → stopped|error.
+//   - Audio chunks are subscribed only while an attempt is running and are dropped (never queued)
+//     between attempts; the old socket's handlers are detached, so late transcripts/replies vanish.
+//   - stop() cancels a pending retry immediately; a graceful stop (flush + {type:"stop"}) never
+//     reconnects, whatever the server does afterwards.
+//   - Attempts exhaust after SPEECH_MAX_RECONNECTS consecutive failures; a connection that ran for
+//     SPEECH_RECONNECT_RESET_MS resets the counter, so occasional drops over a long session recover.
 export function createSpeechStream({ backend = 'baseten', capture, onTranscript, onStatus, deps } = {}) {
-  const core = createCore({ kind: 'speech', deps, onStatus });
+  let sess = null; // { active, attempt, reconnectTimer, previousStreamId, current }
+
+  const emit = (obj) => { try { onStatus?.(obj); } catch (e) { console.error(e); } };
+
+  const core = createCore({ kind: 'speech', deps, onStatus: routeStatus });
+  const clock = core.clock;
 
   function unsubscribeChunks(r) {
     const off = r.extra.unsubChunk;
@@ -372,14 +393,80 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
     if (off) { try { off(); } catch { /* ignore */ } }
   }
 
-  async function start() {
+  // Every status from a run is decorated with the run's streamId; a terminal 'error' from a run
+  // decides between retrying and giving up. 'stopped' only ever comes from stop().
+  function routeStatus(obj) {
+    const S = sess;
+    const r = S?.current ?? null;
+    if (!S) { emit(obj); return; }
+    if (obj.phase !== 'error') {
+      if (obj.phase === 'stopped') {
+        const message = obj.message ?? S.stopReason ?? null;
+        finish(S, { phase: 'stopped', ...(message ? { message } : {}), streamId: r?.streamId ?? null });
+        return;
+      }
+      emit({ ...obj, streamId: r?.streamId ?? null, attempt: S.attempt });
+      return;
+    }
+    if (r) unsubscribeChunks(r);
+    const failedId = r?.streamId ?? null;
+    if (!S.active || S.stopping) { finish(S, { phase: 'stopped', ...(S.stopReason ? { message: S.stopReason } : {}) }); return; }
+    const permanent = Boolean(r?.extra.permanent);
+    if (r && r.extra.runningSince !== null && clock.nowMs() - r.extra.runningSince >= SPEECH_RECONNECT_RESET_MS) S.attempt = 0;
+    if (permanent || S.attempt >= SPEECH_MAX_RECONNECTS) {
+      const why = permanent ? obj.message
+        : `${obj.message}. Speech gave up after ${S.attempt} reconnect attempt${S.attempt === 1 ? '' : 's'}; stop and start capture to try again`;
+      finish(S, { phase: 'error', message: why, streamId: failedId, attempt: S.attempt, retryable: !permanent });
+      return;
+    }
+    S.attempt += 1;
+    const delay = SPEECH_RECONNECT_DELAYS_MS[Math.min(S.attempt - 1, SPEECH_RECONNECT_DELAYS_MS.length - 1)];
+    S.current = null;
+    S.previousStreamId = failedId;
+    emit({
+      phase: 'reconnecting', streamId: null, previousStreamId: failedId, attempt: S.attempt, maxAttempts: SPEECH_MAX_RECONNECTS, retryInMs: delay,
+      message: `${obj.message}. Reconnecting speech (attempt ${S.attempt} of ${SPEECH_MAX_RECONNECTS}) in ${Math.round(delay / 1000)} s…`,
+    });
+    S.reconnectTimer = clock.setTimeout(() => {
+      S.reconnectTimer = null;
+      if (sess !== S || !S.active) return;
+      connect(S);
+    }, delay);
+  }
+
+  // Immediate end of a session (no flush, no retry): used by restart.
+  function abort(S, reason) {
+    S.active = false;
+    S.stopping = true;
+    S.stopReason = reason || null;
+    if (S.current && !S.current.ended) core.end(S.current, { message: S.stopReason }); // → routeStatus('stopped') → finish
+    else finish(S, { phase: 'stopped', ...(S.stopReason ? { message: S.stopReason } : {}) });
+  }
+
+  // Terminal for the whole session: exactly once.
+  function finish(S, obj) {
+    if (S.finished) return;
+    S.finished = true;
+    S.active = false;
+    if (S.reconnectTimer !== null) { clock.clearTimeout(S.reconnectTimer); S.reconnectTimer = null; }
+    if (S.current) unsubscribeChunks(S.current);
+    S.current = null;
+    if (sess === S) sess = null;
+    emit(obj);
+  }
+
+  function connect(S) {
     const r = core.begin();
+    S.current = r;
     r.extra.unsubChunk = null;
     r.extra.chunksSent = 0;
     r.extra.chunksSkipped = 0;
-    core.status(r, { phase: 'connecting', message: 'Connecting to the speech service…' });
+    r.extra.permanent = false;
+    r.extra.runningSince = null;
+    const retrying = S.attempt > 0;
+    core.status(r, { phase: 'connecting', message: retrying ? `Reconnecting to the speech service (attempt ${S.attempt} of ${SPEECH_MAX_RECONNECTS})…` : 'Connecting to the speech service…' });
     r.extra.readyTimer = core.setTimer(r, () => {
-      core.end(r, { error: `Speech backend did not become ready within ${SPEECH_READY_TIMEOUT_MS / 1000} s. The cloud model may be waking from zero; retry in a moment.` });
+      core.end(r, { error: `Speech backend did not become ready within ${Math.round(SPEECH_READY_TIMEOUT_MS / 1000)} s. The cloud model may be waking from zero` });
     }, SPEECH_READY_TIMEOUT_MS);
 
     const onChunk = (chunk) => {
@@ -388,7 +475,7 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
       if (!buffer || buffer.byteLength !== SPEECH_CHUNK_BYTES) { r.extra.chunksSkipped += 1; return; }
       if (r.ws.bufferedAmount > SPEECH_MAX_BUFFERED_BYTES) {
         unsubscribeChunks(r);
-        core.end(r, { error: 'Audio backlog over 512 ms; stopped speech instead of adding lag' });
+        core.end(r, { error: 'Audio backlog over 512 ms; dropped the speech connection instead of adding lag' });
         return;
       }
       r.ws.send(buffer);
@@ -407,6 +494,8 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
             r.ready = msg;
             if (r.phase === 'connecting') {
               r.phase = 'running';
+              r.extra.runningSince = clock.nowMs();
+              unsubscribeChunks(r); // never two subscriptions for one run
               r.extra.unsubChunk = capture.onChunk(onChunk);
               core.status(r, { phase: 'running', ready: msg, message: `Listening via ${msg.model_id || msg.model || 'speech backend'} (${msg.backend || backend})` });
             }
@@ -416,6 +505,7 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
             break;
           case 'error':
             r.lastError = msg.message || 'Server error';
+            if (msg.retryable === false) r.extra.permanent = true;
             core.status(r, { phase: r.phase, message: r.lastError });
             break;
           default:
@@ -432,20 +522,33 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
     });
   }
 
+  async function start() {
+    if (sess) abort(sess, 'Restarted'); // a restart never waits for a graceful flush
+    const S = { active: true, stopping: false, finished: false, attempt: 0, reconnectTimer: null, previousStreamId: null, current: null, stopReason: null };
+    sess = S;
+    connect(S);
+  }
+
   // While running with an open socket: 500 ms of paced zero PCM so the server VAD closes the
   // utterance, then {type:"stop"}; the server sends the last final and closes (3 s grace here).
+  // In every other state (connecting, waiting to reconnect) the session ends at once. Never reconnects.
   function stop(reason) {
-    const r = core.run;
-    if (!r) return;
-    if (r.phase === 'stopping') return;
+    const S = sess;
+    if (!S) return;
+    if (S.stopping) return;
+    S.active = false;
+    S.stopReason = reason || null;
+    if (S.reconnectTimer !== null) { clock.clearTimeout(S.reconnectTimer); S.reconnectTimer = null; }
+    const r = S.current;
+    if (!r || r.ended) { finish(S, { phase: 'stopped', ...(S.stopReason ? { message: S.stopReason } : {}) }); return; }
     unsubscribeChunks(r);
-    if (r.phase !== 'running' || !core.isOpen(r)) { core.end(r, { message: reason || null }); return; }
+    if (r.phase !== 'running' || !core.isOpen(r)) { core.end(r, { message: S.stopReason }); return; }
+    S.stopping = true;
     r.phase = 'stopping';
-    r.extra.stopReason = reason || null;
     core.status(r, { phase: 'running', message: 'Microphone off. Flushing and waiting for the final transcript…' });
     let sent = 0;
     const step = () => {
-      if (!core.isOpen(r)) { core.end(r, { message: r.extra.stopReason }); return; }
+      if (!core.isOpen(r)) { core.end(r, { message: S.stopReason }); return; }
       if (sent < SPEECH_FLUSH_CHUNKS) {
         r.ws.send(new ArrayBuffer(SPEECH_CHUNK_BYTES));
         sent += 1;
@@ -454,7 +557,7 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
       }
       r.ws.send(JSON.stringify({ type: 'stop' }));
       r.extra.closeTimer = core.setTimer(r, () => {
-        core.end(r, { message: r.extra.stopReason || 'Stopped (server did not close in time)' });
+        core.end(r, { message: S.stopReason || 'Stopped (server did not close in time)' });
       }, SPEECH_CLOSE_GRACE_MS);
     };
     r.extra.flushTimer = core.setTimer(r, step, SPEECH_FLUSH_STEP_MS);
@@ -463,7 +566,8 @@ export function createSpeechStream({ backend = 'baseten', capture, onTranscript,
   return {
     start, stop,
     get streamId() { return core.run?.streamId ?? null; },
-    get state() { return core.run?.phase ?? 'idle'; },
+    get state() { return sess ? (core.run?.phase ?? 'reconnecting') : 'idle'; },
     get ready() { return core.run?.ready ?? null; },
+    get attempt() { return sess?.attempt ?? 0; },
   };
 }

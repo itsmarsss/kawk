@@ -330,10 +330,21 @@ export function createV1Provider({ getState, capture, streams, deps = {} }) {
     const stream = self?.stream ?? null;
     const owns = gen === captureGen && (stream === null || active[kind] === stream);
     if (!owns) {
-      if ((st.phase === 'stopped' || st.phase === 'error') && stream?.streamId) sendJson({ type: 'stream.state', kind, available: false, stream_id: stream.streamId });
+      const staleId = st.streamId ?? st.previousStreamId ?? stream?.streamId ?? null;
+      if ((st.phase === 'stopped' || st.phase === 'error' || st.phase === 'reconnecting') && staleId) sendJson({ type: 'stream.state', kind, available: false, stream_id: staleId });
       return;
     }
-    const streamId = stream?.streamId ?? live.streams[kind].streamId ?? null;
+    if (st.phase === 'reconnecting') {
+      // The speech client dropped one connection and will open another with a fresh stream id.
+      // Retire the old id now so the server never accepts stale transcripts/tokens; the new id is
+      // announced only once its connection reports 'running'.
+      const oldId = st.previousStreamId ?? live.streams[kind].streamId ?? null;
+      if (oldId) sendJson({ type: 'stream.state', kind, available: false, stream_id: oldId });
+      setStream(kind, { phase: 'reconnecting', message: st.message ?? '', streamId: null, ready: null, attempt: st.attempt ?? null });
+      return;
+    }
+    // A stream status may name its own id (speech does after reconnects); otherwise the instance's.
+    const streamId = st.streamId ?? stream?.streamId ?? live.streams[kind].streamId ?? null;
     setStream(kind, { phase: st.phase, message: st.message ?? '', streamId, ready: st.ready ?? live.streams[kind].ready });
     if (st.phase === 'running') sendJson({ type: 'stream.state', kind, available: true, stream_id: streamId });
     if (st.phase === 'stopped' || st.phase === 'error') {

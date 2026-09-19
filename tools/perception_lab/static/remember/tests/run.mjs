@@ -10,13 +10,16 @@ import * as decisionRender from './decision_render_test.mjs';
 import * as overlayTests from './overlay_test.mjs';
 import * as deletionTests from './deletion_test.mjs';
 import * as memoryRender from './memory_render_test.mjs';
+import * as speechReconnect from './speech_reconnect_test.mjs';
 
 storeTests.run();
 await providerTests.run();
 await liveTests.run();
 await captureTests.run();
+await speechReconnect.run();
 await lcdTests.run();
 await v1Tests.run();
+await v1Tests.runSpeechReconnect();
 await decisionRender.run();
 await memoryRender.run();
 overlayTests.run();

@@ -8,6 +8,15 @@
 > substituting another UI author. A component testing request does not authorize
 > executing the entire overnight build plan.
 
+> **Spoken-name correction (2026-09-19):** A natural spoken introduction or name
+> correction can name either an unknown face or an already enrolled person.
+> Jev validates the exact spoken name candidate against one stable visible person;
+> unrelated mentions, quoted introductions and ambiguous/replaced targets are rejected.
+> Rename an enrolled person on the same gallery UUID, retaining notes and updating
+> profiles, the device card and face-box labels. Unknown people still require bound
+> face enrollment. Speech must tolerate cloud startup and recover transient connection
+> failures with bounded retries and fresh stream IDs; never replay stale audio.
+
 > **Conversation-memory correction (2026-09-19):** Ordinary conversation is a primary
 > memory source. Jev independently decides whether a finalized statement contains useful
 > personal details, preferences, plans, interests, or future conversation topics and saves

@@ -179,6 +179,7 @@ def test_product_introduction_control_binds_actual_face_session_and_completes(se
     events, controls = [], []
     product = ProductSession("bound-contract", events.append, lambda: clock["now"],
                              control=controls.append)
+    product.set_capture(camera="live")
     product.stream_state("faces", True, stream_id="faces-connection")
 
     def ingest():
