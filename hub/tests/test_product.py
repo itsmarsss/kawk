@@ -235,6 +235,76 @@ def test_supported_transcripts_only_and_note_recall(rig):
     assert s.display["card"]["template"] == "idle"
 
 
+def test_typed_clear_dispatch_resolves_answer_without_overwriting_idle(rig):
+    s, clock, events, _, _ = rig
+    face_frame(s, clock)
+    reply = command(s, "ask", text="Clear the display.")["answer"]
+    assert reply["kind"] == "found" and reply["text"] == "Display cleared."
+    assert s.display["card"]["template"] == "idle"
+    assert [e["type"] for e in events if e["type"].startswith("answer.")] == ["answer.pending", "answer.resolved"]
+    clock.advance(.2)
+    face_frame(s, clock)
+    assert s.display["card"]["template"] == "idle"
+
+
+def test_typed_remember_dispatch_saves_once_to_live_profile_and_keeps_note_confirmation(rig):
+    s, clock, events, _, _ = rig
+    face_frame(s, clock)
+    answer = command(s, "ask", text="Remember that Alex likes tea.")["answer"]
+    assert answer["kind"] == "found" and answer["profile_id"] == "real-gallery-a"
+    assert list(s.notes.values())[0]["text"] == "Alex likes tea"
+    assert len([e for e in events if e["type"] == "note.upserted"]) == 1
+    assert s.display["card"]["title"] == "Note saved"
+    assert s.display["card"]["body"] == "Alex likes tea"
+    s.stream_state("faces", False, stream_id="faces-1")
+    failed = command(s, "ask", text="Remember that this must not attach to a stale face")["answer"]
+    assert failed["kind"] == "not_found" and len(s.notes) == 1
+    assert "profile_id" not in failed
+
+
+def test_typed_intro_dispatch_starts_once_and_keeps_enrollment_prompt(rig):
+    s, clock, events, controls, _ = rig
+    for _ in range(3):
+        face_frame(s, clock, ident=None)
+        clock.advance(.2)
+    answer = command(s, "ask", text="I'm Maya.")["answer"]
+    assert answer["kind"] == "found" and answer["text"] == "Learning Maya from clear face frames"
+    assert s.enrollment.name == "Maya" and controls[-1]["name"] == "Maya"
+    assert s.display["card"]["template"] == "enroll_prompt"
+    assert not any(p["name"] == "Maya" for p in s.profiles.values())  # real enrollment still needs face samples
+    command(s, "ask", text="I'm Maya.")
+    assert len([c for c in controls if c["type"] == "enroll"]) == 1
+    assert len([e for e in events if e["type"] == "answer.resolved"]) == 2
+
+
+def test_typed_intro_stopped_camera_and_ambiguous_target_do_not_enroll(rig):
+    s, clock, _, controls, _ = rig
+    s.stop()
+    answer = command(s, "ask", text="I'm Maya")["answer"]
+    assert answer["kind"] == "not_found" and "Start the camera" in answer["text"]
+    assert not controls and s.enrollment is None
+    s.set_capture(camera="live")
+    s.stream_state("faces", True, stream_id="faces-1")
+    second = {"track_id": 2, "box": [350, 70, 540, 270], "stable_id": None}
+    for _ in range(3):
+        face_frame(s, clock, ident=None, more=[second])
+        clock.advance(.2)
+    answer = command(s, "ask", text="I'm Maya")["answer"]
+    assert answer["kind"] == "not_found" and "exactly one" in answer["text"]
+    assert not controls and s.enrollment is None
+
+
+def test_typed_long_intro_keeps_name_reprompt_without_answer_covering_it(rig):
+    s, clock, _, _, _ = rig
+    for _ in range(3):
+        face_frame(s, clock, ident=None)
+        clock.advance(.2)
+    answer = command(s, "ask", text="I'm here to talk about hardware")["answer"]
+    assert answer["kind"] == "not_found" and "Say just their name" in answer["text"]
+    assert s.enrollment.waiting_name
+    assert s.display["card"]["template"] == "enroll_prompt"
+
+
 def test_spoken_person_reminder_demo_binds_uuid_and_shows_on_next_encounter(rig):
     s, clock, events, _, _ = rig
     s.profiles["real-gallery-a"]["name"] = "Bob"
@@ -404,6 +474,48 @@ def test_gate_intro_permission_and_typed_ask_remain_independent(rig):
     assert len([e for e in events if e["type"] == "answer.resolved"]) == 1
 
 
+@pytest.mark.parametrize("utterance", ["Who is this?", "Who's that person?", "Please identify this person.", "Who am I talking to?"])
+def test_identify_current_person_includes_real_uuid_prior_encounter_and_notes(rig, utterance):
+    s, clock, _, _, _ = rig
+    face_frame(s, clock)
+    previously_seen = iso(clock())
+    empty_frames(s, clock, "faces")
+    face_frame(s, clock)
+    command(s, "note.save", note={"profile_id": "real-gallery-a", "text": "Works on hardware"})
+    answer = command(s, "ask", text=utterance)["answer"]
+    assert answer["kind"] == "found" and answer["profile_id"] == "real-gallery-a"
+    assert "This is Alex." in answer["text"]
+    assert previously_seen in answer["text"] and "Works on hardware" in answer["text"]
+    assert s.display["card"]["template"] == "answer"
+    assert s.display["card"]["body"] == answer["text"]
+
+
+def test_gated_identify_executes_once_and_rechecks_original_person_uuid(rig):
+    s, clock, events, _, _ = rig
+    face_frame(s, clock)
+    first = gate_final(s, "identify-a", "Who is this?")
+    assert s.apply_transcript_decision(first, gate_decision("identify"))
+    assert not s.apply_transcript_decision(first, gate_decision("identify"))
+    delayed = gate_final(s, "identify-delayed", "Who is this?")
+    empty_frames(s, clock, "faces")
+    face_frame(s, clock, ident="real-gallery-b")  # same display name, different UUID
+    count = len([e for e in events if e["type"] == "answer.resolved"])
+    assert not s.apply_transcript_decision(delayed, gate_decision("identify"))
+    assert len([e for e in events if e["type"] == "answer.resolved"]) == count
+
+
+def test_identify_does_not_guess_from_unknown_faces_or_stale_known_tracks(rig):
+    s, clock, _, _, _ = rig
+    face_frame(s, clock, ident=None)
+    assert command(s, "ask", text="Who is that?")["answer"]["kind"] == "not_found"
+    face_frame(s, clock)
+    gated = gate_final(s, "identify-outage", "Who is this?")
+    s.stream_state("faces", False, stream_id="faces-1")
+    assert not s.apply_transcript_decision(gated, gate_decision("identify"))
+    answer = command(s, "ask", text="Who is this?")["answer"]
+    assert answer["kind"] == "not_found" and "profile_id" not in answer
+
+
 def test_gate_context_is_bounded_categorical_and_excludes_old_transcripts(rig):
     s, clock, _, _, _ = rig
     face_frame(s, clock)
@@ -478,6 +590,28 @@ def test_selected_gate_mode_disables_rule_clips_but_keeps_manual_capture():
     assert "last_seen_at" in s.profiles["object:keys"]
     command(s, "moment.mark")
     assert len(clips) == 1
+
+
+def test_decision_source_event_retains_disappeared_object_and_last_observation():
+    clock = Clock()
+    decisions = []
+    s = ProductSession("source-events", lambda _: None, clock,
+                       auto_capture_rules=False, on_decision_event=decisions.append)
+    s.set_capture(camera="live")
+    s.stream_state("objects", True, stream_id="objects-1")
+    object_frame(s, clock)
+    eid, observed = s.active["object:keys"], clock()
+    empty_frames(s, clock, "objects")
+    assert decisions == [{"kind": "object_disappeared", "event_id": eid + ":disappeared",
+                          "encounter_id": eid, "profile_id": "object:keys", "event_at": observed}]
+    s.tick()
+    assert len(decisions) == 1
+    object_frame(s, clock)
+    s.stream_state("objects", False, stream_id="objects-1")
+    clock.advance(30)
+    s.tick()
+    s.stop()
+    assert len(decisions) == 1  # an outage and Stop are not observed disappearance
 
 
 def test_provider_status_distinguishes_configured_jev_from_rules_and_service_health():

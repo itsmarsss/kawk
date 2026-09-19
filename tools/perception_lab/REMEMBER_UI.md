@@ -78,9 +78,12 @@ disable camera or microphone independently, and choose backends (defaults: local
 ### Honest limits of V1
 
 - Speech "directedness" and "significance" are **not judged**. Finals that match the fixed
-  grammar act (`where is/are my …`, `remind me to <verb> <Enrolled Name> about <topic>`,
+  grammar act (`where is/are my …`, `who is this?` / `who is that?` / `who am I talking to?` /
+  `identify this person` — the currently recognised person's name, notes and prior encounter,
+  never a guess for an unknown face — `remind me to <verb> <Enrolled Name> about <topic>`,
   `recall notes about …`, `remember that …`, `I'm …`, `clear the display`); everything else is
-  shown as conversation. The same grammar applies to the typed Ask box.
+  shown as conversation. The same grammar applies to the typed Ask box. With the Jev backend,
+  finalized speech waits for Jev's decision and a Jev error produces no fallback action.
 - Clips come from two sources only: the manual **Mark moment** button, and one limited V1 rule in
   `product.py`: when an object category that was observed repeatedly disappears and its
   disappearance is confirmed, the engine saves a clip around its last observation (a
@@ -168,7 +171,7 @@ faces socket; numeric-string track ids are sent as integers because `faces.py` r
 if no faces stream is running the UI answers with `enrollment.status {data:{type:'error'}}`), `v1.pong`.
 
 **Commands** (all handled server-side in `product.py`): `ask {text}` (fixed grammar incl. the
-reminder phrase; the receipt carries the answer and a `reminder.upserted` envelope follows when
+identify phrases and the reminder phrase; the receipt carries the answer and a `reminder.upserted` envelope follows when
 one is saved), `note.save/delete`,
 `reminder.save/delete/complete/snooze/dismiss`, `moment.delete`, `moment.mark {title?,
 event_at?, profile_ids?}`, `display.clear {}`, `enrollment.cancel {}`,

@@ -37,6 +37,7 @@ class BrowserSession:
         self.device_origin = None
         self.last_media = {}
         self.decision_tokens = OrderedDict()
+        self.decision_sources = OrderedDict()
         self.last_decision_state = ""
         self.last_perception_decision = 0.0
         self.decision_status = {
@@ -50,6 +51,7 @@ class BrowserSession:
             self.id, self.enqueue, gallery_people=gallery_people,
             trigger_clip=self._trigger_clip, control=self._control,
             auto_capture_rules=decision_backend is None,
+            on_decision_event=self._decision_source,
         )
         self.decisions = V1DecisionBridge(
             decision_backend, on_voice=self._voice_decision,
@@ -92,7 +94,36 @@ class BrowserSession:
             return False
         return True
 
-    def _decision_input(self, kind, data, stream_id):
+    def _decision_source(self, event):
+        """Keep source provenance until the complete perception update has finished."""
+        if not self.decisions:
+            return
+        self.decision_sources[event["event_id"]] = event
+        while len(self.decision_sources) > 16:
+            event_id, _ = self.decision_sources.popitem(last=False)
+            self._decision_status({"state": "dropped", "event_id": event_id,
+                                   "reason": "source_queue_full"})
+
+    def _flush_decision_sources(self):
+        if not self.decision_sources:
+            return False
+        sources, self.decision_sources = list(self.decision_sources.values()), OrderedDict()
+        if not self.decisions or not self.product.running or self.product.capture["camera"] != "live":
+            return False
+        # A single clip must have a single source time. Only same-frame losses
+        # may share it; never attach unrelated historical or still-visible IDs.
+        latest = max(sources, key=lambda event: event["event_at"])
+        matching = [event for event in sources if event["event_at"] == latest["event_at"]]
+        for event in sources:
+            if event["event_at"] != latest["event_at"]:
+                self._decision_status({"state": "dropped", "event_id": event["event_id"],
+                                       "reason": "superseded_source_time"})
+        self._decision_input("perception.objects", {}, None, source={
+            **latest, "profile_ids": tuple(sorted({event["profile_id"] for event in matching})),
+        })
+        return True
+
+    def _decision_input(self, kind, data, stream_id, *, source=None):
         if not self.decisions:
             return
         state = self.product.decision_state()
@@ -109,7 +140,8 @@ class BrowserSession:
                 self.decision_tokens.popitem(last=False)
             event_kind, transcript = "transcript", data["text"]
         else:
-            if state == self.last_decision_state or time.monotonic() - self.last_perception_decision < 1:
+            if source is None and (state == self.last_decision_state or
+                                   time.monotonic() - self.last_perception_decision < 1):
                 return
             self.last_perception_decision = time.monotonic()
             event_kind, transcript = "perception", ""
@@ -118,9 +150,21 @@ class BrowserSession:
         if isinstance(event_at, bool) or not isinstance(event_at, (int, float)) or not math.isfinite(event_at):
             event_at = time.time()
         profiles = tuple(sorted(self.product.active))[:16]
+        previous_limit = 1024 if source is not None else 1600
+        context = f"Previous observed context:\n{previous[:previous_limit]}\nCurrent observed context:\n{state[:4096]}"
+        if source is not None:
+            event_id, event_at, profiles = source["event_id"], source["event_at"], source["profile_ids"]
+            # This categorical delta remains visible even if a timer confirmed
+            # the disappearance between frames. Current state is read above,
+            # after every object in this update has been processed.
+            labels = [self.product.profiles[ident]["name"] for ident in profiles
+                      if ident in self.product.profiles]
+            while len(json.dumps(labels, ensure_ascii=False)) > 512:
+                labels.pop()
+            context = f"Source event: object_disappeared; labels={json.dumps(labels, ensure_ascii=False)}\n{context}"
         submitted = self.decisions.submit(DecisionEvent(
             event_id=event_id, event_at=event_at, kind=event_kind,
-            state=f"Previous observed context:\n{previous[:1600]}\nCurrent observed context:\n{state[:4096]}",
+            state=context,
             transcript=transcript[:1000], profile_ids=profiles,
             subject_key=("|".join(profiles) or "scene")[:256],
             clip_eligible=self.product.capture["camera"] == "live",
@@ -132,6 +176,10 @@ class BrowserSession:
 
     def touch(self):
         self.last_used = time.time()
+
+    def tick(self):
+        self.product.tick()
+        self._flush_decision_sources()
 
     def enqueue(self, message):
         if self.closed:
@@ -234,6 +282,7 @@ class BrowserSession:
                     else:
                         await self.decisions.stop()
                         self.decision_tokens.clear()
+                        self.decision_sources.clear()
                         self.last_decision_state = ""
             if command.get("type") == "moment.delete":
                 await self.clips.delete(command.get("payload", {}).get("moment_id", ""))
@@ -262,7 +311,8 @@ class BrowserSession:
                                                          execute_rules=self.decisions is None)
             else:
                 accepted = methods[kind](data, stream_id=stream_id)
-            if accepted:
+            source_consumed = self._flush_decision_sources()
+            if accepted and (not source_consumed or kind == "perception.speech"):
                 self._decision_input(kind, data, stream_id)
         elif kind == "enrollment.status":
             self.product.dispatch({"type": "enrollment.status", "payload": {
@@ -277,6 +327,7 @@ class BrowserSession:
         if self.decisions:
             await self.decisions.stop()
         self.decision_tokens.clear()
+        self.decision_sources.clear()
         self.last_decision_state = ""
         self.camera_active = False
         await self.clips.stop()
@@ -392,7 +443,7 @@ class ProductSessions:
 
         async def tick():
             while not session.closed:
-                session.product.tick()
+                session.tick()
                 await asyncio.sleep(0.2)
 
         sender = asyncio.create_task(send())

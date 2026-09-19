@@ -201,14 +201,25 @@ class FaceSession:
         available = [track for track in self.tracks if now - track["seen"] < 1]
         updated, output = [], []
         for face in result["faces"]:
+            vector = unit(face["embedding"])
             match = self.gallery.match(face["embedding"])
             track = max(available, key=lambda item: iou(item["box"], face["box"]), default=None)
+            if (track is not None and track["stable_id"] is None and track["match_id"] is None
+                    and match["id"] is None and (
+                        float(track["embedding"] @ vector) < 0.45
+                        or float(track["unknown_anchor"] @ vector) < 0.45)):
+                # An unknown replacement must not inherit the track to which an
+                # introduction was bound while its speech decision was pending.
+                # Retain a fixed anchor as well as the last observation so gradual
+                # drift cannot move a pending name onto a different face.
+                track = None
             if track and iou(track["box"], face["box"]) >= 0.25:
                 available.remove(track)
             else:
-                track = {"track_id": self.next_track, "votes": [], "stable_id": None}
+                track = {"track_id": self.next_track, "votes": [], "stable_id": None,
+                         "unknown_anchor": vector.copy()}
                 self.next_track += 1
-            track.update(box=face["box"], seen=now, embedding=unit(face["embedding"]), match_id=match["id"])
+            track.update(box=face["box"], seen=now, embedding=vector, match_id=match["id"])
             candidate = match["id"]
             if candidate is not None and (
                 track["stable_id"] not in (None, candidate)

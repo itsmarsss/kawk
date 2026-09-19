@@ -19,7 +19,7 @@ export async function run() {
   console.log('\n# decision status rendering');
   globalThis.document = fakeDocument();
   globalThis.Node = FakeNode;
-  const { decisionItem, componentStatus } = await import('../ui/views/live_now.js');
+  const { decisionItem, componentStatus, effectiveDecisions, heardCopy, renderLiveNow } = await import('../ui/views/live_now.js');
   const text = (el) => el.textContent;
   const cls = (el) => el.children[1].className;
   const rules = decisionItem(null, { backend: 'rules', configured: false, model: null, message: 'V1 command and object rules; Jev is not connected' });
@@ -52,5 +52,36 @@ export async function run() {
   strip = componentStatus({ ...live, decision: { backend: 'typesafe', phase: 'deciding', model: 'jev-1.13.0', message: 'Deciding' } }, settings, null);
   check(/Jev deciding/.test(strip.textContent) && /Faces.*running/.test(strip.textContent), 'strip shows runtime decision status with the other components');
   eq(componentStatus(null, settings, null), null, 'no live status → nothing rendered');
+
+  console.log('\n# mode-dependent Heard copy + identify phrase (real render path)');
+  eq(effectiveDecisions(null, null).backend, 'rules', 'default backend is rules');
+  eq(effectiveDecisions(null, { decisions: { backend: 'typesafe', configured: true } }).source, 'configured', 'configured typesafe from /api/status');
+  eq(effectiveDecisions({ decision: { backend: 'rules', phase: 'rules' } }, { decisions: { backend: 'typesafe' } }).backend, 'rules', 'runtime status wins over /api/status');
+  const rulesCopy = heardCopy(effectiveDecisions(null, null), true);
+  check(/V1 command rules/.test(rulesCopy.header) && /match the V1 grammar act/.test(rulesCopy.empty), 'rules copy keeps the honest fixed-grammar wording');
+  const confCopy = heardCopy(effectiveDecisions(null, { decisions: { backend: 'typesafe', configured: true } }), true);
+  check(/waits for Jev/.test(confCopy.header) && /configured, not verified/.test(confCopy.header), 'configured typesafe says waits for Jev and not verified');
+  check(!/connected/.test(confCopy.header + confCopy.empty), 'configured typesafe never claims connected');
+  const errCopy = heardCopy(effectiveDecisions({ decision: { backend: 'typesafe', phase: 'error' } }, null), true);
+  check(/no actions/.test(errCopy.empty) && /no rules fallback/.test(errCopy.empty), 'typesafe error says no actions and no fallback');
+  const offCopy = heardCopy(effectiveDecisions(null, null), false);
+  check(/off/.test(offCopy.header), 'speech off copy unchanged');
+  // full live Now render, both modes, through renderLiveNow (guards the apiStatus binding regression too)
+  const state = { profiles: {}, notes: {}, encounters: {}, reminders: {}, moments: {}, transcript: [], answer: { pending: null, latest: null }, recognition: null, enrollment: null, display: null, active_encounter_id: null, applied_event_ids: [], diagnostics: { duplicates: 0, stale: 0, rejected: [], log: [] }, status: null, scene: { kind: 'idle', caption: '' } };
+  const actions = { reminder: {}, live: { switchMode() {}, start() {}, stop() {}, markMoment() {}, clearDisplay() {}, introduce() {}, cancelEnrollment() {}, updateSettings() {}, refreshDevices() {}, reset() {} }, ask() {}, openMoment() {} };
+  const base = { state, nowMs: Date.now(), actions, settings, devices: { cameras: [], microphones: [] }, notices: [] };
+  const liveOn = { ...live, capturing: false };
+  const onSettings = { ...settings, speech: { enabled: true, backend: 'baseten' } };
+  let page = null; let renderErr = null;
+  try { page = renderLiveNow({ ...base, settings: onSettings, live: liveOn, apiStatus: null }); } catch (e) { renderErr = e; }
+  check(!renderErr, `renderLiveNow renders in rules mode without apiStatus (${renderErr?.message ?? 'ok'})`);
+  check(/V1 command rules/.test(page.textContent) && /who is this\?/.test(page.textContent), 'rules render shows rules header and the identify phrase in the Ask helper');
+  check(/agent harness and durable memory are deferred/.test(page.textContent) && !/No agent or memory service is connected/.test(page.textContent), 'helper no longer says no agent connection exists');
+  page = renderLiveNow({ ...base, settings: onSettings, live: { ...liveOn, decision: { backend: 'typesafe', phase: 'idle', model: 'jev-1.13.0', message: 'Jev waits for capture' } }, apiStatus: { decisions: { backend: 'typesafe', configured: true, model: 'jev-1.13.0', message: 'x' } } });
+  check(/finalized speech waits for Jev/.test(page.textContent) && /Jev idle · jev-1\.13\.0/.test(page.textContent), 'typesafe render: Heard header waits for Jev and status strip shows runtime status');
+  check(!/V1 command rules/.test(page.textContent), 'typesafe render does not claim rules act on speech');
+  check(/who is this\?/.test(page.textContent), 'identify phrase present in typesafe mode too');
+  page = renderLiveNow({ ...base, settings: onSettings, live: { ...liveOn, decision: { backend: 'typesafe', phase: 'error', model: 'jev-1.13.0', message: 'Unauthorized' } }, apiStatus: null });
+  check(/no rules fallback/.test(page.textContent) && /Unauthorized/.test(page.textContent), 'typesafe error render: no fallback stated, error shown');
   delete globalThis.document; delete globalThis.Node;
 }

@@ -132,7 +132,7 @@ def test_same_box_replacement_cannot_take_over_a_bound_introduction(session, col
     for _ in range(collected):
         value.process(frame())
     result = value.process(frame(index=1))
-    assert result["faces"][0]["track_id"] == target  # IoU alone would reuse this track.
+    assert result["faces"][0]["track_id"] != target  # Embedding continuity overrides IoU.
     assert result["enrollment"]["collected"] == collected
     assert_aborted(value, result, "target_changed")
 
@@ -204,3 +204,45 @@ def test_product_introduction_control_binds_actual_face_session_and_completes(se
     assert faces.gallery.list() == [person]
     assert faces.enrolling is None
     assert product.enrollment is None
+
+
+def test_replacement_before_enrollment_start_cannot_inherit_the_introduced_track(session):
+    value, _ = session
+    introduced = value.process(frame())["faces"][0]["track_id"]
+    replacement = value.process(frame(index=1))["faces"][0]["track_id"]
+    assert replacement != introduced
+    with pytest.raises(ValueError, match="no longer in view"):
+        value.begin_enrollment("Maya", target_track_id=introduced)
+    assert value.enrolling is None
+    assert value.gallery.list() == []
+
+
+def test_gate_wait_cannot_bind_a_name_to_an_unknown_same_box_replacement(session):
+    from tools.perception_lab.product import ProductSession
+
+    faces, clock = session
+    controls = []
+    product = ProductSession("pending-intro", lambda event: None, lambda: clock["now"],
+                             control=controls.append)
+    product.set_capture(camera="live", microphone="live")
+    product.stream_state("faces", True, stream_id="f")
+    product.stream_state("speech", True, stream_id="s")
+
+    def ingest(index):
+        result = faces.process(frame(index=index))
+        product.ingest_faces({**result, "input_wh": [640, 480], "detected_count": 1,
+                              "observed_at": clock["now"]}, stream_id="f")
+
+    for _ in range(3):
+        ingest(0)
+        clock["now"] += .2
+    product.ingest_transcript({"segment_id": "intro", "text": "I'm Maya", "is_final": True},
+                              stream_id="s", execute_rules=False)
+    token = product.pending_transcript_decision("intro", stream_id="s")
+    for _ in range(3):
+        ingest(1)
+        clock["now"] += .2
+    assert not product.apply_transcript_decision(token, {
+        "directed": False, "allow_introduction": True, "intent": "introduction"})
+    assert not controls
+    assert faces.gallery.list() == []

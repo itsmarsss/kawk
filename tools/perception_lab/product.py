@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import math
 import re
 import time
@@ -38,6 +39,7 @@ END_S = 2.0
 OBSERVATION_GAP_S = 1.5
 AUTO_CLIP_COOLDOWN_S = 30
 PRIORITY = {"idle": 0, "profile": 10, "enroll_prompt": 20, "alert": 20, "answer": 30}
+_LOG = logging.getLogger(__name__)
 
 
 def iso(value: float) -> str:
@@ -153,13 +155,15 @@ class ProductSession:
                  clock: Callable[[], float] = time.time, gallery_people: Iterable[JSON] = (),
                  trigger_clip: Callable[[JSON], None] | None = None,
                  control: Callable[[JSON], None] | None = None,
-                 auto_capture_rules: bool = True):
+                 auto_capture_rules: bool = True,
+                 on_decision_event: Callable[[JSON], None] | None = None):
         if not isinstance(auto_capture_rules, bool):
             raise ValueError("auto_capture_rules must be boolean")
         self.session_id = text(session_id, "session_id", 128)
         self._emit_callback, self.clock = emit, clock
         self.trigger_clip, self.control = trigger_clip, control
         self.auto_capture_rules = auto_capture_rules
+        self.on_decision_event = on_decision_event
         self.created_at = self.clock()
         self.seq = 0
         self.running = True
@@ -450,8 +454,15 @@ class ProductSession:
         self.profiles[ident].update(last_seen_at=iso(observed), last_seen_location=latest["location"] if latest else record.get("location", "In view"))
         self._emit("encounter.ended", {"encounter_id": eid, "ended_at": record["ended_at"]})
         self._emit("profile.upserted", {"profile": self.profiles[ident]})
-        if confirmed_absence and self.auto_capture_rules and self.profiles[ident]["kind"] == "object":
-            self._auto_capture(ident)
+        if confirmed_absence and self.profiles[ident]["kind"] == "object":
+            if self.on_decision_event:
+                try:
+                    self.on_decision_event({"kind": "object_disappeared", "event_id": eid + ":disappeared",
+                                            "encounter_id": eid, "profile_id": ident, "event_at": observed})
+                except Exception:
+                    _LOG.exception("Decision source-event consumer failed")
+            if self.auto_capture_rules:
+                self._auto_capture(ident)
 
     def _auto_capture(self, ident: str) -> None:
         """V1 placement proxy: a repeatedly observed object disappears from view.
@@ -503,7 +514,7 @@ class ProductSession:
         records = [e for e in self.encounters.values() if e["profile_id"] == ident and e.get("ended_at")]
         return max(records, key=lambda e: e["ended_at"], default=None)
 
-    def _profile_card(self, ident: str, *, force: bool = False) -> None:
+    def _profile_body(self, ident: str) -> str:
         profile = self.profiles[ident]
         previous = self._previous(ident)
         label = "Last met" if profile["kind"] == "person" else "Last seen"
@@ -511,6 +522,11 @@ class ProductSession:
         notes = [n["text"] for n in self.notes.values() if n["profile_id"] == ident]
         if notes:
             body += "\n" + "\n".join(notes[-2:])
+        return body
+
+    def _profile_card(self, ident: str, *, force: bool = False) -> None:
+        profile = self.profiles[ident]
+        body = self._profile_body(ident)
         reminder = next(iter(self._due(ident)), None)
         self._candidate = self._action("profile", profile["name"], body, reminder=reminder)
         key = f"profile:{self.active.get(ident)}:{body}:{reminder and (reminder['id'], reminder['text'])}"
@@ -614,6 +630,7 @@ class ProductSession:
                 "segment": transcript,
                 "generation": self._speech_generation, "stream_id": stream.stream_id,
                 "recorded_at": self.clock(), "foreground": self.foreground,
+                "identity_target": self._live_person_target(),
                 "intro_targets": tuple(sorted(self._unknown_tracks)),
                 "face_stream_id": self.streams["faces"].stream_id}
             while len(self._pending_speech) > 32:
@@ -688,6 +705,8 @@ class ProductSession:
             return False
         if intent == "note" and pending["foreground"] != self.foreground:
             return False
+        if intent == "identify" and pending["identity_target"] != self._live_person_target():
+            return False
         self._execute_transcript_rule(pending["text"], rule)
         return True
 
@@ -744,6 +763,8 @@ class ProductSession:
         found = re.fullmatch(r"(?:please )?where (?:are|is|did I (?:leave|put)) (?:my|the) ([\w -]{1,60})(?: please)?", normalized, re.I)
         if found:
             return "find", found[1].strip().lower()
+        if re.fullmatch(r"(?:please )?(?:who(?: is|'s) (?:this|that)(?: person)?|who am I (?:speaking|talking) (?:to|with)|identify (?:this|that)(?: person)?)", normalized, re.I):
+            return "identify", ""
         intro = re.fullmatch(r"(?:(?:hi|hello|hey)[,!]?\s+)?(?:I'm|I am|my name is|this is|that's|(?:their|her|his) name(?: is|'s))\s+(.+)", normalized, re.I)
         if intro:
             return "introduction", intro[1].strip()
@@ -760,6 +781,17 @@ class ProductSession:
             return "recall", (recall[1] or "").strip()
         return None
 
+    def _live_profile_target(self) -> str | None:
+        ident = self.foreground
+        if (ident in self.profiles
+                and any(track.profile_id == ident and self._track_live(track) for track in self.tracks.values())):
+            return ident
+        return None
+
+    def _live_person_target(self) -> str | None:
+        ident = self._live_profile_target()
+        return ident if ident is not None and self.profiles[ident]["kind"] == "person" else None
+
     def ask(self, question: str, *, parsed: tuple[str, str] | None = None) -> JSON:
         question = text(question, "question", 400)
         kind, target = parsed or self._parse(question) or ("unsupported", "")
@@ -767,7 +799,29 @@ class ProductSession:
         self._emit("answer.pending", {"query_id": qid, "question": question})
         answer: JSON = {"query_id": qid, "question": question, "kind": "not_found", "text": "I have no matching record in this session.", "answered_at": iso(self.clock())}
         answer_observation = None
-        if kind == "find":
+        handled_display = False
+        if kind == "clear":
+            self._idle()
+            answer.update(kind="found", text="Display cleared.")
+            handled_display = True
+        elif kind == "note":
+            answer.update(self._save_spoken_note(target))
+            handled_display = True
+        elif kind == "introduction":
+            if not self.running or self.capture["camera"] != "live":
+                answer["text"] = "Start the camera before introducing someone. No profile was created."
+            else:
+                result = self._introduction(target)
+                answer.update(kind="found" if result["status"] == "collecting" else "not_found", text=result["message"])
+                handled_display = result["status"] in ("collecting", "listening")
+        elif kind == "identify":
+            ident = self._live_person_target()
+            if ident:
+                answer.update(kind="found", profile_id=ident,
+                              text=f"This is {self.profiles[ident]['name']}.\n{self._profile_body(ident)}")
+            else:
+                answer["text"] = "No recognized person is currently in view."
+        elif kind == "find":
             canonical = target[:-1] if target.endswith("s") else target
             options = [p for p in self.profiles.values() if p["kind"] == "object" and p["name"].lower().removesuffix("s") == canonical]
             if options:
@@ -807,10 +861,11 @@ class ProductSession:
         elif kind == "reminder":
             answer.update(self._save_person_reminder(target))
         else:
-            answer.update(kind="unsupported", text="V1 supports finding an observed object, recalling notes, person reminders, introductions, and clearing the display.")
+            answer.update(kind="unsupported", text="V1 supports finding an observed object, identifying the person in view, recalling notes, person reminders, introductions, and clearing the display.")
         self._emit("answer.resolved", {"answer": answer})
         self._last_answer, self._answer_observation = copy.deepcopy(answer), answer_observation
-        self._show(self._action("answer", question, answer["text"], clip_id=answer.get("moment_id")), qid, force=True)
+        if not handled_display:
+            self._show(self._action("answer", question, answer["text"], clip_id=answer.get("moment_id")), qid, force=True)
         return answer
 
     def _save_person_reminder(self, request: str) -> JSON:
@@ -853,12 +908,11 @@ class ProductSession:
             return "single_stable_unknown", candidates
         return "none", []
 
-    def _introduction(self, name: str) -> None:
+    def _introduction(self, name: str) -> JSON:
         target_state, candidates = self._introduction_target()
         stream = self.streams["faces"]
         if target_state != "single_stable_unknown":
-            self._enrollment_event("ambiguous", "An introduction needs exactly one stable unknown face in view. No profile was created.")
-            return
+            return self._enrollment_event("ambiguous", "An introduction needs exactly one stable unknown face in view. No profile was created.")
         target = candidates[0].source_track
         name = text(name, "name", 160).strip('"“”').rstrip(".!? ").replace("’", "'")
         named = self._parse(name)
@@ -867,30 +921,33 @@ class ProductSession:
         words = name.split()
         if not 1 <= len(words) <= 3 or any(not re.fullmatch(r"[\w'’-]+", part, re.UNICODE) for part in words):
             if self.enrollment and self.enrollment.attempts >= 1:
-                self._cancel_enrollment("Could not extract a short name; introduce again", "error")
+                message = "Could not extract a short name; introduce again"
+                self._cancel_enrollment(message, "error")
+                return {"status": "error", "message": message}
             else:
                 self.enrollment = Enrollment(target or "", stream.stream_id, "", self.clock(), attempts=1, waiting_name=True)
-                self._enrollment_event("listening", "Say just their name.")
+                result = self._enrollment_event("listening", "Say just their name.")
                 self._enroll_candidate = self._action("enroll_prompt", "Who is this?", "Say just their name.")
                 self._show(self._enroll_candidate, "enroll:prompt")
-            return
+                return result
         clean = text(name, "name", 80).title()
         if self.control is None:
-            self._enrollment_event("error", "Enrollment control is not connected")
-            return
+            return self._enrollment_event("error", "Enrollment control is not connected")
         if self.enrollment and not self.enrollment.waiting_name:
-            return
+            return {"status": "collecting", "message": f"Already learning {self.enrollment.name}. Finish or cancel that introduction first."}
         self.enrollment = Enrollment(target or "", stream.stream_id, clean, self.clock())
         self.control({"type": "enroll", "name": clean, "target_track_id": target, "session_id": self.session_id})
-        self._enrollment_event("collecting", f"Learning {clean} from clear face frames", collected=0, required=5)
+        result = self._enrollment_event("collecting", f"Learning {clean} from clear face frames", collected=0, required=5)
         self._enroll_candidate = self._action("enroll_prompt", clean, "Learning this face…")
         self._show(self._enroll_candidate, f"enroll:{target}")
+        return result
 
-    def _enrollment_event(self, status: str, message: str, **extra: Any) -> None:
+    def _enrollment_event(self, status: str, message: str, **extra: Any) -> JSON:
         value: JSON = {"status": status, "message": message, **extra}
         if self.enrollment:
             value.update(target_track_id=self.enrollment.target, name=self.enrollment.name)
         self._emit("enrollment.updated", {"enrollment": value})
+        return value
 
     def _enrollment_frame(self, result: JSON) -> None:
         if not self.enrollment or self.enrollment.waiting_name:
@@ -917,12 +974,15 @@ class ProductSession:
             self.enrollment = None
             self._enroll_candidate = None
 
-    def _save_spoken_note(self, value: str) -> None:
-        if not self.foreground:
-            self._show(self._action("answer", "Choose a profile", "A note needs a person or object in view."), self._id("answer"), force=True)
-            return
-        self.dispatch({"type": "note.save", "payload": {"note": {"profile_id": self.foreground, "text": value}}})
+    def _save_spoken_note(self, value: str) -> JSON:
+        ident = self._live_profile_target()
+        if not ident:
+            message = "A note needs a person or object in view."
+            self._show(self._action("answer", "Choose a profile", message), self._id("answer"), force=True)
+            return {"kind": "not_found", "text": message}
+        self.dispatch({"type": "note.save", "payload": {"note": {"profile_id": ident, "text": value}}})
         self._show(self._action("answer", "Note saved", value), self._id("answer"), force=True)
+        return {"kind": "found", "profile_id": ident, "text": "Note saved: " + value}
 
     def _bounded(self, records: dict, limit: int = MAX_RECORDS) -> None:
         if len(records) >= limit:

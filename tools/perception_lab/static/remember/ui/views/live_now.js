@@ -20,12 +20,41 @@ export function createStage() {
 
 const PHASE_LABEL = { idle: 'off', connecting: 'connecting…', ready: 'ready', running: 'running', stopped: 'stopped', error: 'error' };
 
+/**
+ * Effective decision backend for copy: the socket's runtime status wins, then /api/status
+ * (environment configured, never verified), else rules. Same precedence as the status strip.
+ */
+export function effectiveDecisions(live, apiStatus) {
+  const d = live?.decision;
+  if (d) return { backend: d.backend, phase: d.phase, source: 'runtime' };
+  const c = apiStatus?.decisions;
+  if (c?.backend === 'typesafe') return { backend: 'typesafe', phase: null, source: 'configured' };
+  return { backend: 'rules', phase: 'rules', source: c ? 'configured' : 'default' };
+}
+
+/** Copy for the "Heard" card that follows the effective backend without claiming more than is known. */
+export function heardCopy(decisions, speechOn) {
+  if (!speechOn) return { header: 'Speech stream off', empty: 'Speech stream is off. Type a request below instead.' };
+  if (decisions.backend === 'typesafe') {
+    const errorish = decisions.phase === 'error' || decisions.phase === 'backoff' || decisions.phase === 'dropped';
+    return {
+      header: `Live transcript · finalized speech waits for Jev${decisions.source === 'configured' ? ' (configured, not verified)' : ''}`,
+      empty: errorish
+        ? 'Nothing heard yet. Jev is unavailable right now, so finalized speech triggers no actions; there is no rules fallback.'
+        : 'Nothing heard yet. Finalized speech is sent to Jev for a decision; nothing acts until it answers.',
+    };
+  }
+  return { header: 'Live transcript · V1 command rules', empty: 'Nothing heard yet. Finals that match the V1 grammar act; everything else is shown as conversation.' };
+}
+
 export function renderLiveNow(ctx) {
   const { state, nowMs, actions, live, apiStatus, settings, notices } = ctx;
   const encounter = select.activeEncounter(state);
   const profile = select.activeProfile(state);
   const capturing = Boolean(live?.capturing);
   const connected = live?.session === 'connected';
+  const decisions = effectiveDecisions(live, apiStatus);
+  const heard = heardCopy(decisions, Boolean(settings.microphone && settings.speech.enabled));
 
   return h('div.now-grid',
     h('div.stack',
@@ -37,8 +66,8 @@ export function renderLiveNow(ctx) {
         : emptyState(capturing ? 'Nothing recognised yet' : 'Capture is off', capturing ? 'Enrolled people and detected object categories appear here when the perception streams see them. Recognition uses the real face gallery; objects are categories, not your specific item.' : 'Start capture to run the real face, object and speech streams. Session notes and reminders still work while capture is off.'),
       enrollmentPanel(ctx),
       h('section.card', { 'aria-labelledby': 'heard-h' },
-        h('div.section-head', h('h2#heard-h', 'Heard'), h('span.tiny.muted', settings.microphone && settings.speech.enabled ? 'Live transcript · V1 command rules' : 'Speech stream off')),
-        transcriptList(state.transcript, nowMs, { quiet: Boolean(state.answer.latest || state.answer.pending), emptyText: settings.microphone && settings.speech.enabled ? 'Nothing heard yet. Finals that match the V1 grammar act; everything else is shown as conversation.' : 'Speech stream is off. Type a question below instead.' }),
+        h('div.section-head', h('h2#heard-h', 'Heard'), h('span.tiny.muted', heard.header)),
+        transcriptList(state.transcript, nowMs, { quiet: Boolean(state.answer.latest || state.answer.pending), emptyText: heard.empty }),
         answerCard(state.answer.latest, state.answer.pending, state, nowMs, { onOpenMoment: actions.openMoment }),
         askForm(ctx)),
     ),
@@ -47,7 +76,10 @@ export function renderLiveNow(ctx) {
         h('div.section-head', h('h2#recent-h', 'Recent moments'), h('a.small', { href: '#/moments' }, 'All')),
         recentMoments(state, nowMs, actions)),
       setupPanel(ctx, capturing),
-      h('p.tiny.muted', 'Live V1: real perception and a small server-side command grammar. Notes, reminders, encounters and clips live only in this temporary session. No agent or memory service is connected yet. ', h('a', { href: '#', onClick: (e) => { e.preventDefault(); actions.live.switchMode('demo'); } }, 'Switch to Demo mode')),
+      h('p.tiny.muted', decisions.backend === 'typesafe'
+        ? 'Live V1 with the optional Jev decision bridge (status above). Notes, reminders, encounters and clips live only in this temporary session; the production agent harness and durable memory are deferred. '
+        : 'Live V1: real perception and a small server-side command grammar. Notes, reminders, encounters and clips live only in this temporary session; the production agent harness and durable memory are deferred. ',
+        h('a', { href: '#', onClick: (e) => { e.preventDefault(); actions.live.switchMode('demo'); } }, 'Switch to Demo mode')),
       diagnostics(state, live)));
 }
 
@@ -138,9 +170,9 @@ function enrollLabel(e) {
 }
 
 function askForm(ctx) {
-  const input = h('input#ask-input', { type: 'text', autocomplete: 'off', maxLength: 160, placeholder: 'e.g. “where are my keys?” or “remind me to ask Bob about dinner”', 'aria-label': 'Typed request (falls back for speech)' });
+  const input = h('input#ask-input', { type: 'text', autocomplete: 'off', maxLength: 160, placeholder: 'e.g. “where are my keys?”, “who is this?”, “remind me to ask Bob about dinner”', 'aria-label': 'Typed request (falls back for speech)' });
   return h('div', h('form.ask', { onSubmit: (e) => { e.preventDefault(); const t = input.value.trim(); if (!t) return; ctx.actions.ask(t); input.value = ''; } }, input, h('button.primary', { type: 'submit', disabled: ctx.live?.session !== 'connected' }, 'Ask')),
-    h('p.tiny.muted', { style: 'margin-top:6px' }, 'Typed requests follow a fixed grammar in every mode: “where is/are my …” (observed object categories), “remind me to ask Bob about dinner” (uses their enrolled name; the reminder shows next time Bob is recognised), “recall notes about …”, “remember that …”, “I’m …” (introduction), “clear the display”. With the Jev backend configured, only finalized live speech and significance are gated by Jev; typed Ask is not. Not a general assistant.'));
+    h('p.tiny.muted', { style: 'margin-top:6px' }, 'Typed requests follow a fixed grammar in every mode: “where is/are my …” (observed object categories), “who is this?” (the recognised person in view — their notes and last encounter; unknown faces are never guessed), “remind me to ask Bob about dinner” (uses their enrolled name; the reminder shows next time Bob is recognised), “recall notes about …”, “remember that …”, “I’m …” (introduction), “clear the display”. With the Jev backend configured, only finalized live speech and significance are gated by Jev; typed Ask is not. Not a general assistant.'));
 }
 
 function recentMoments(state, nowMs, actions) {
