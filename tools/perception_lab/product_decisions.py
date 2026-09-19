@@ -81,11 +81,17 @@ def backend_from_environment(environment: Mapping[str, str] | None = None) -> Ty
 def question_bank() -> list[GateQuestion]:
     return [
         GateQuestion(key="addressed", kind="noul", fire_threshold=.65,
-                     instructions="The latest final speech is addressed to the assistant, rather than another person. "
-                     "Use the supplied conversation context; a command-like phrase alone is not sufficient. "
-                     "If there is no latest final speech, answer false."),
+                     instructions='Should this no-wake-word memory assistant act on LATEST_FINAL_SPEECH as a current request? Answer yes '
+                     'for a direct request to find an object, identify a person, remember or recall information, set a '
+                     'reminder, or control the display. The object need not be observed and the answer need not be known: a '
+                     'request remains a request when memory is empty. No assistant name is needed and merely seeing a person '
+                     'does not imply that person is the addressee. Answer no when the request is quoted, reported, '
+                     'hypothetical, explicitly addressed to another person, or absent. These no conditions take priority over '
+                     "the request wording. A person name used to address a question (for example, 'Alex, where is my phone?') "
+                     'makes it a request to that person, not the assistant. Ordinary conversation and introductions are no. A '
+                     'person named as the subject of a reminder is not its addressee.'),
         GateQuestion(key="intent", kind="choice", choices=list(INTENTS), fire_threshold=.5,
-                     instructions="Classify the latest final speech: find an observed object; identify a person; "
+                     instructions="Classify the latest final speech: find an object, including an object not yet observed; identify a person; "
                      "introduction giving a person's name; note to remember; recall notes; clear display; "
                      "reminder for a future encounter; or none. Do not invent speech or extract free-form data."),
         GateQuestion(key="allow_introduction", kind="noul", fire_threshold=.7,
