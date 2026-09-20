@@ -134,8 +134,16 @@ def build_hub(config: AppConfig) -> Hub:
     )
     router = TaskRouter(bus, world, memory, gallery)
     link = DeviceLinkServer(bus, config.devicelink, config.devices)
+    backends = {
+        "sam": config.services.sam.backend,
+        "face": config.services.face.backend,
+        "stt": config.services.stt.backend,
+        "jev": config.services.jev.backend,
+    }
     dashboard = (
-        Dashboard(bus, link, compositor, config.dashboard) if config.dashboard.enabled else None
+        Dashboard(bus, link, compositor, config.dashboard, backends=backends)
+        if config.dashboard.enabled
+        else None
     )
     return Hub(
         dashboard=dashboard,

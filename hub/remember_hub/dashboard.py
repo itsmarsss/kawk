@@ -1,15 +1,16 @@
-"""Local ops dashboard: live camera feed (MJPEG) + device stats + display state.
+"""Local ops dashboard: live camera feed (MJPEG) + graphs + device control.
 
 Zero new dependencies — a tiny asyncio HTTP server (core deps rule, AGENTS.md §11).
 The feed is multipart/x-mixed-replace pulled from devicelink's newest-wins frame
 slots, so it adds no capture path and can never back-pressure the pipeline
 (slow browser -> frames simply skip; same drop-when-behind discipline as §3.1).
+Graphs are client-side canvas sparklines over /stats.json polls — no chart libs.
 
 Endpoints:
   GET /            the dashboard page
   GET /stream      MJPEG of the newest frame across devices (?device=<id> to pin)
   GET /frame.jpg   single latest frame (snapshot)
-  GET /stats.json  devices, current display, recent display actions
+  GET /stats.json  devices (fps/lag/bitrate), display state, recent actions, backends
   GET /control?device=<id>&w=&h=&fps=&quality=   push video config to a device
                    (GET-with-params on purpose: local testing surface, tiny server)
 """
@@ -35,36 +36,58 @@ log = logging.getLogger(__name__)
 _STREAM_FPS = 30.0  # poll rate of the newest-wins slot; must exceed device fps
 
 _PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>{name} — dashboard</title>
+<html><head><meta charset="utf-8"><title>__NAME__ — dashboard</title>
 <style>
-  body {{ background:#0b0e14; color:#cdd6f4; font:14px/1.5 -apple-system,system-ui,monospace;
-         margin:0; padding:24px; }}
-  h1 {{ font-size:18px; margin:0 0 16px; color:#89b4fa; }}
-  .row {{ display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }}
-  img {{ max-width:640px; width:100%; border:1px solid #313244; border-radius:8px;
-        background:#000; }}
-  .panel {{ background:#11141c; border:1px solid #313244; border-radius:8px;
-           padding:14px 18px; min-width:320px; }}
-  .panel h2 {{ font-size:13px; margin:0 0 8px; color:#94a3c0; text-transform:uppercase; }}
-  pre {{ margin:0; white-space:pre-wrap; font-size:12px; }}
-  .card {{ font-size:16px; }} .card b {{ color:#a6e3a1; }}
-  .toolbar {{ margin-top:8px; display:flex; gap:8px; }}
-  button {{ background:#1e2433; color:#cdd6f4; border:1px solid #45475a; border-radius:6px;
-           padding:6px 14px; font:inherit; cursor:pointer; }}
-  button:hover {{ background:#2a3145; }}
-  button.on {{ background:#2b3a55; border-color:#89b4fa; color:#89b4fa; }}
+  :root { --bg:#0b0e14; --panel:#11141c; --line:#313244; --text:#cdd6f4; --dim:#94a3c0;
+          --acc:#89b4fa; --ok:#a6e3a1; --warn:#f9e2af; --bad:#f38ba8; }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); margin:0; padding:20px;
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  h1 { font-size:17px; margin:0; color:var(--acc); }
+  .top { display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+  .chip { background:var(--panel); border:1px solid var(--line); border-radius:99px;
+          padding:3px 12px; font-size:12px; color:var(--dim); }
+  .chip b { color:var(--text); font-weight:600; }
+  #devchip.on { border-color:var(--ok); color:var(--ok); }
+  #devchip.off { border-color:var(--bad); color:var(--bad); }
+  .row { display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; }
+  .feedwrap { flex:2; min-width:420px; max-width:900px; }
+  img#feed { width:100%; border:1px solid var(--line); border-radius:10px; background:#000;
+             display:block; }
+  .col { display:flex; flex-direction:column; gap:14px; flex:1; min-width:340px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:13px 16px; }
+  .panel h2 { font-size:11px; letter-spacing:.08em; margin:0 0 10px; color:var(--dim);
+              text-transform:uppercase; }
+  pre { margin:0; white-space:pre-wrap; font-size:12px; }
+  .card { font-size:15px; } .card b { color:var(--ok); }
+  .toolbar { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button, select { background:#1e2433; color:var(--text); border:1px solid #45475a;
+                   border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
+  button:hover { background:#2a3145; }
+  button.on { background:#2b3a55; border-color:var(--acc); color:var(--acc); }
+  input[type=range] { accent-color:var(--acc); vertical-align:middle; }
+  .stat { display:flex; justify-content:space-between; align-items:baseline;
+          font-size:12px; color:var(--dim); margin:8px 0 2px; }
+  .stat:first-child { margin-top:0; }
+  .stat b { color:var(--text); font-size:15px; }
+  canvas { width:100%; height:48px; display:block; }
 </style></head>
 <body>
-<h1>{name} — hub dashboard</h1>
+<div class="top">
+  <h1>__NAME__ hub</h1>
+  <span class="chip off" id="devchip">no device</span>
+  <span class="chip">display <b id="dispchip">idle</b></span>
+  <span class="chip" id="backends">backends —</span>
+</div>
 <div class="row">
-  <div>
+  <div class="feedwrap">
     <img id="feed" src="/stream" alt="camera feed">
     <div class="toolbar">
       <button id="flipH">flip ↔</button>
       <button id="flipV">flip ↕</button>
       <button onclick="window.open('/frame.jpg','_blank')">snapshot</button>
-    </div>
-    <div class="panel toolbar" style="margin-top:12px; align-items:center; flex-wrap:wrap;">
+      <span style="flex:1"></span>
       <select id="res">
         <option value="640x480">640×480</option>
         <option value="1280x720" selected>1280×720</option>
@@ -77,59 +100,128 @@ _PAGE = """<!doctype html>
       <label>q <input id="q" type="range" min="10" max="95" value="70"
         oninput="document.getElementById('qv').textContent=this.value"></label>
       <span id="qv">70</span>
-      <button id="apply">apply to device</button>
+      <button id="apply">apply</button>
       <span id="applyMsg"></span>
     </div>
+    <div class="panel" style="margin-top:14px;">
+      <h2>display now</h2><div class="card" id="card">—</div>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <h2>recent display actions</h2><pre id="actions">(none yet)</pre>
+    </div>
   </div>
-  <div>
-    <div class="panel"><h2>display now</h2><div class="card" id="card">—</div></div>
-    <br>
-    <div class="panel"><h2>devices</h2><pre id="devices">—</pre></div>
-    <br>
-    <div class="panel"><h2>recent display actions</h2><pre id="actions">—</pre></div>
+  <div class="col">
+    <div class="panel">
+      <h2>throughput — last 3 min</h2>
+      <div class="stat"><span>frames / s</span><b id="v_fps">—</b></div>
+      <canvas id="c_fps"></canvas>
+      <div class="stat"><span>lag (staleness)</span><b id="v_lag">—</b></div>
+      <canvas id="c_lag"></canvas>
+      <div class="stat"><span>bitrate</span><b id="v_mbps">—</b></div>
+      <canvas id="c_mbps"></canvas>
+      <div class="stat"><span>frame size</span><b id="v_kb">—</b></div>
+      <canvas id="c_kb"></canvas>
+    </div>
+    <div class="panel"><h2>devices</h2><pre id="devices">(none connected)</pre></div>
   </div>
 </div>
 <script>
-// View-only flips (per-browser, persisted). For a physically upside-down rig,
-// flip at the SOURCE instead: rpi_device.py --hflip/--vflip (fixes perception too).
+// ---- view flips (per-browser; for a physically rotated rig use rpi_device --hflip/--vflip)
 const feed = document.getElementById('feed');
 let fx = +(localStorage.fx || 0), fy = +(localStorage.fy || 0);
-function applyFlip() {{
-  feed.style.transform = `scale(${{fx ? -1 : 1}}, ${{fy ? -1 : 1}})`;
+function applyFlip() {
+  feed.style.transform = `scale(${fx ? -1 : 1}, ${fy ? -1 : 1})`;
   document.getElementById('flipH').classList.toggle('on', !!fx);
   document.getElementById('flipV').classList.toggle('on', !!fy);
-}}
-document.getElementById('flipH').onclick = () => {{ fx ^= 1; localStorage.fx = fx; applyFlip(); }};
-document.getElementById('flipV').onclick = () => {{ fy ^= 1; localStorage.fy = fy; applyFlip(); }};
+}
+document.getElementById('flipH').onclick = () => { fx ^= 1; localStorage.fx = fx; applyFlip(); };
+document.getElementById('flipV').onclick = () => { fy ^= 1; localStorage.fy = fy; applyFlip(); };
 applyFlip();
-document.getElementById('apply').onclick = async () => {{
+
+// ---- device control
+document.getElementById('apply').onclick = async () => {
   const [w, h] = document.getElementById('res').value.split('x');
   const fps = document.getElementById('fps').value;
   const q = document.getElementById('q').value;
   const msg = document.getElementById('applyMsg');
   msg.textContent = '…';
-  try {{
-    const r = await (await fetch(`/control?w=${{w}}&h=${{h}}&fps=${{fps}}&quality=${{q}}`)).json();
-    msg.textContent = r.ok ? `pushed to ${{r.pushed.join(', ')}}` : 'no device connected';
-  }} catch (e) {{ msg.textContent = 'failed'; }}
-  setTimeout(() => {{ msg.textContent = ''; }}, 4000);
-}};
-async function poll() {{
-  try {{
+  try {
+    const r = await (await fetch(`/control?w=${w}&h=${h}&fps=${fps}&quality=${q}`)).json();
+    msg.textContent = r.ok ? `pushed to ${r.pushed.join(', ')}` : 'no device connected';
+  } catch (e) { msg.textContent = 'failed'; }
+  setTimeout(() => { msg.textContent = ''; }, 4000);
+};
+
+// ---- sparkline history (client-side ring buffers over /stats.json polls)
+const CAP = 180;  // 3 min at 1 Hz
+const hist = { fps: [], lag: [], mbps: [], kb: [] };
+function push(key, value) {
+  hist[key].push(value);
+  if (hist[key].length > CAP) hist[key].shift();
+}
+function spark(id, data, color) {
+  const c = document.getElementById(id);
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (!w) return;
+  c.width = w * dpr; c.height = h * dpr;
+  const x = c.getContext('2d');
+  x.scale(dpr, dpr);
+  x.clearRect(0, 0, w, h);
+  if (data.length < 2) return;
+  const max = Math.max(...data, 1e-6);
+  const px = i => (i + (CAP - data.length)) / (CAP - 1) * w;   // right-aligned scroll
+  const py = v => h - 2 - (v / max) * (h - 8);
+  x.beginPath();
+  data.forEach((v, i) => i ? x.lineTo(px(i), py(v)) : x.moveTo(px(i), py(v)));
+  x.strokeStyle = color; x.lineWidth = 1.5; x.stroke();
+  x.lineTo(px(data.length - 1), h); x.lineTo(px(0), h); x.closePath();
+  x.fillStyle = color + '22'; x.fill();
+  x.fillStyle = '#94a3c0'; x.font = '9px ui-monospace';
+  x.fillText(max.toFixed(max < 10 ? 1 : 0), 4, 10);           // y-axis max marker
+}
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+async function poll() {
+  try {
     const s = await (await fetch('/stats.json')).json();
-    document.getElementById('devices').textContent = s.devices.map(d =>
-      `${{d.id}} (${{d.cls}})  ${{d.fps.toFixed(1)}} fps  frames=${{d.frames_rx}}  ` +
-      `audio=${{d.audio_rx}}  ${{d.wh ? d.wh.join('x') : '-'}}  ${{d.kb}}KB  ` +
-      `lag=${{d.lag_ms == null ? '-' : d.lag_ms + 'ms'}}`).join('\\n') || '(none connected)';
+    const d = s.devices[0];
+    const chip = document.getElementById('devchip');
+    if (d) {
+      chip.textContent = `${d.id} · ${d.wh ? d.wh.join('×') : '?'} `;
+      chip.className = 'chip on';
+      push('fps', d.fps); push('lag', d.lag_ms ?? 0);
+      push('mbps', d.mbps); push('kb', d.kb);
+      document.getElementById('v_fps').textContent = d.fps.toFixed(1);
+      const lagEl = document.getElementById('v_lag');
+      lagEl.textContent = (d.lag_ms ?? 0) + ' ms';
+      lagEl.style.color = d.lag_ms > 300 ? css('--bad') : d.lag_ms > 100 ? css('--warn') : css('--ok');
+      document.getElementById('v_mbps').textContent = d.mbps.toFixed(1) + ' Mbit/s';
+      document.getElementById('v_kb').textContent = d.kb + ' KB';
+      spark('c_fps', hist.fps, css('--acc'));
+      spark('c_lag', hist.lag, css('--warn'));
+      spark('c_mbps', hist.mbps, css('--ok'));
+      spark('c_kb', hist.kb, css('--dim'));
+    } else {
+      chip.textContent = 'no device';
+      chip.className = 'chip off';
+    }
+    document.getElementById('devices').textContent = s.devices.map(x =>
+      `${x.id} (${x.cls})  ${x.fps.toFixed(1)} fps  lag=${x.lag_ms ?? '-'}ms  ` +
+      `${x.wh ? x.wh.join('×') : '-'}  ${x.kb}KB  ${x.mbps.toFixed(1)}Mbit/s\n` +
+      `  frames=${x.frames_rx}  audio=${x.audio_rx}`).join('\n') || '(none connected)';
     const c = s.display;
+    document.getElementById('dispchip').textContent = c.template;
     document.getElementById('card').innerHTML =
       c.template === 'idle' ? '<i>idle</i>' :
-      `<b>[${{c.template}}]</b> ${{c.title}} — ${{c.body}} <small>(${{c.age_s.toFixed(0)}}s)</small>`;
+      `<b>[${c.template}]</b> ${c.title} — ${c.body} <small>(${c.age_s.toFixed(0)}s)</small>`;
     document.getElementById('actions').textContent =
-      s.actions.map(a => `${{a.t}}  [${{a.template}}] ${{a.title}} — ${{a.body}}`).join('\\n') || '(none yet)';
-  }} catch (e) {{}}
+      s.actions.map(a => `${a.t}  [${a.template}] ${a.title} — ${a.body}`).join('\n') || '(none yet)';
+    document.getElementById('backends').textContent =
+      'backends ' + Object.entries(s.backends).map(([k, v]) => `${k}:${v}`).join(' ');
+  } catch (e) {}
   setTimeout(poll, 1000);
-}}
+}
 poll();
 </script>
 </body></html>
@@ -138,11 +230,17 @@ poll();
 
 class Dashboard:
     def __init__(
-        self, bus: EventBus, link: DeviceLinkServer, compositor: Compositor, cfg: DashboardCfg
+        self,
+        bus: EventBus,
+        link: DeviceLinkServer,
+        compositor: Compositor,
+        cfg: DashboardCfg,
+        backends: dict[str, str] | None = None,
     ) -> None:
         self.link = link
         self.compositor = compositor
         self.cfg = cfg
+        self.backends = backends or {}
         self._server: asyncio.Server | None = None
         self._actions: deque[dict] = deque(maxlen=8)
         self._fps: dict[str, tuple[float, int, float]] = {}  # id -> (t, frames_rx, fps)
@@ -180,7 +278,7 @@ class Dashboard:
             path = request.split(b" ", 2)[1].decode("latin-1", "replace")
             parsed = urlparse(path)
             if parsed.path == "/":
-                body = _PAGE.format(name=PRODUCT_NAME).encode()
+                body = _PAGE.replace("__NAME__", PRODUCT_NAME).encode()
                 self._respond(writer, "200 OK", "text/html; charset=utf-8", body)
             elif parsed.path == "/stats.json":
                 body = json.dumps(self._stats()).encode()
@@ -291,6 +389,7 @@ class Dashboard:
                     self._fps[device_id] = (now, session.frames_rx, fps)
             lf = session.latest_frame
             lag = session.frame_lag_ms()
+            kb = round(len(lf.jpeg) / 1024) if lf else 0
             devices.append(
                 {
                     "id": device_id,
@@ -299,7 +398,8 @@ class Dashboard:
                     "audio_rx": session.audio_rx,
                     "fps": round(max(fps, 0.0), 1),
                     "wh": list(lf.wh) if lf else None,
-                    "kb": round(len(lf.jpeg) / 1024) if lf else 0,
+                    "kb": kb,
+                    "mbps": round(max(fps, 0.0) * kb * 8 / 1000, 2),
                     "lag_ms": round(lag) if lag is not None else None,
                 }
             )
@@ -314,4 +414,5 @@ class Dashboard:
                 "age_s": age_s,
             },
             "actions": list(self._actions),
+            "backends": self.backends,
         }
