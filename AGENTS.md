@@ -61,6 +61,7 @@ path is deterministic and fast.
 | Answering questions | Retrieval + display templates. No generative LLM in the hot path (optional extension later) |
 | Topology | Hub on MacBook near the device; all heavy inference remote on 4× H100 via Baseten |
 | H100 allocation | #1 SAM 3.1 · #2 Whisper streaming · #3 face rec · **#4 idle tonight (scale-to-zero)** — morning stretch: 2nd SAM replica or the vocab-proposer slow lane (stub exists, §4) |
+| Output surface | **Changed Sept 19 (was: device LCD).** Primary output = **push notifications to a PWA on the wearer's phone** (mirrored to Apple Watch by iOS) via `hub/remember_hub/notify/` consuming `display.current`; the in-device LCD/card path (§5/§9) remains as an optional fallback surface. See `devices/pwa/README.md` |
 | Modularity | **Every** external dependency (SAM, face, STT, Jev, device) sits behind a small interface with `mock`, `local`, and `baseten`/`typesafe` backends selected in `remember.toml` |
 | Tonight's bar | Fully runnable end-to-end **with zero API keys** (mock + local backends); Baseten/TypeSafe code paths complete and deploy-ready but verified in the morning |
 

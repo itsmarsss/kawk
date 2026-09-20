@@ -14,6 +14,19 @@ applies them and announces here.
 - `m2a`+`m2b` — brain loop green: `make demo` (keys) + meet_person, 17-test suite
 - `m1` — devicelink + headless sim e2e + live drivers + `make hub` entrypoint
 - M5a — record/replay (percept-level), latency_probe, README
+- `pwa-notify` branch — **display pivot: LCD -> phone/watch push notifications.**
+  New `notify/` tier consumes `display.current` (compositor untouched): NotifyService
+  (policy: min-priority, cooldown dedupe) -> WebPushSink (`[pwa]` extra) + SSE in-app
+  feed; PwaServer on :8091 serves `devices/pwa/` (installable PWA) + subscribe/test
+  APIs. Touched shared files (heads-up for merge): config.py (+PwaCfg), main.py
+  (wiring), remember.toml (+[pwa]), pyproject (+pwa extra), Makefile (+vapid,
+  pwa-icons), test_hub_boot.py (one line: pwa.enabled=False in tests). Setup:
+  devices/pwa/README.md; phone-in-hand iOS verification is a morning-checklist item.
+  **Overlap notice:** chud3's TS agent has its own PWA + push (docs/PWA_CONTRACT.md,
+  agent/src/push.ts — sqlite delivery queue, port 8091). This tier serves the PYTHON
+  hub and now binds :8092 so both stacks boot on one Mac. Team decision needed
+  before demo: which stack's PWA goes on the phone (their SW payload is
+  {id,title,body,url}; ours is {title,body,tag,data} — trivial to converge later).
 
 ## Interfaces Lane C/D plug into (all live on `chud1`)
 
