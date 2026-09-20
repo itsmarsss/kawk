@@ -7,6 +7,11 @@ data_dir = "data"
 host = "0.0.0.0"
 port = 8765
 
+[dashboard]
+enabled = true
+host = "127.0.0.1" # local ops view: camera feed + device stats + current card
+port = 8090
+
 [services.sam]
 backend = "mock" # mock | local | baseten
 vocabulary = [

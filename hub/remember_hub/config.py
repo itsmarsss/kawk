@@ -19,6 +19,12 @@ class DeviceLinkCfg(BaseModel):
     port: int = 8765
 
 
+class DashboardCfg(BaseModel):
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 8090
+
+
 class SamCfg(BaseModel):
     backend: str = "mock"
     vocabulary: list[str] = Field(default_factory=list)
@@ -68,6 +74,7 @@ class ServicesCfg(BaseModel):
 class AppConfig(BaseModel):
     hub: HubCfg = HubCfg()
     devicelink: DeviceLinkCfg = DeviceLinkCfg()
+    dashboard: DashboardCfg = DashboardCfg()
     services: ServicesCfg = ServicesCfg()
     gate: GateCfg = GateCfg()
     world: WorldCfg = WorldCfg()
