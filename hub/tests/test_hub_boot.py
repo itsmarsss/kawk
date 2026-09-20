@@ -19,6 +19,7 @@ async def test_hub_boots_and_serves_headless_sim(tmp_path):
     config = load_config(REPO / "remember.toml")
     config.hub.data_dir = str(tmp_path)
     config.devicelink.host = "127.0.0.1"
+    config.dashboard.enabled = False  # no fixed-port binds inside tests
     hub = build_hub(config)
     port = await hub.start(port=0)
 
