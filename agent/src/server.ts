@@ -7,6 +7,7 @@ import type { Harness } from "./harness";
 import { join } from "node:path";
 import { GraphFilter, TranscriptFilter } from "./memory-tools";
 import { grepHistory, HistoryQuery } from "./history";
+import { browseAgentMemory } from "./memory-browser";
 
 export function serve(
   harness: Harness,
@@ -238,6 +239,8 @@ export function serve(
           });
         if (path === "/v1/graph/query" && request.method === "POST")
           return json(harness.graph.query(owner, GraphFilter.parse(await request.json())));
+        if (path === "/v1/memory/browse" && request.method === "GET")
+          return json(browseAgentMemory(harness.store, owner, Object.fromEntries(url.searchParams)));
         if (path === "/v1/reminders" && request.method === "GET")
           return json({ reminders: harness.reminders.list(owner) });
         if (path.startsWith("/v1/reminders/") && request.method === "DELETE")

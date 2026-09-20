@@ -13,6 +13,7 @@ import { DEFAULT_EMBEDDING_MODEL } from './embeddings.js';
 import { visualObservations } from './visual-evidence.js';
 import { evaluateObjectIdentity, type CandidateObjectSighting, type ObjectAnchor, type ObjectEvidence } from './object-identity.js';
 import { faceEntityId } from './face-identity.js';
+import { BrowseCursor, type BrowseFilter, type BrowseItem } from './browse.js';
 
 type Row = Record<string, unknown>;
 export interface SessionRecord { id: string; startedAt: number }
@@ -237,6 +238,95 @@ export class Store {
   listCaptures(limit = 50): CaptureRecord[] {
     return (this.db.prepare('SELECT body FROM captures ORDER BY captured_at DESC, id LIMIT ?').all(boundedLimit(limit)) as Row[])
       .map(row => parsed<CaptureRecord>(row)!);
+  }
+
+  /** Read-only source-time pagination, bounded independently of the recent dashboard. */
+  browse(filter: BrowseFilter) {
+    const { kind, query, from, to, history, entityKind, limit } = filter;
+    const signature = createHash('sha256').update(JSON.stringify({ kind, query, from, to, history, entityKind })).digest('hex');
+    let cursor: ReturnType<typeof BrowseCursor.parse> | undefined;
+    if (filter.cursor) {
+      try { cursor = BrowseCursor.parse(JSON.parse(Buffer.from(filter.cursor, 'base64url').toString())); }
+      catch { throw new Error('Invalid memory cursor'); }
+      if (cursor.filter !== signature) throw new Error('Memory filters changed; start a new page');
+    }
+    const args: (number | string)[] = [], conditions: string[] = [];
+    let table: string, time: string, end: string, text: string;
+    let item: (row: Row) => BrowseItem;
+    const base = (row: Row, data: Record<string, unknown>): BrowseItem => ({
+      id: String(data.id ?? row.rowid), kind, at: Number(row.browse_at), title: '', text: '',
+      status: null, captureId: null, entityId: null, data,
+    });
+    if (kind === 'observations') {
+      table = 'observations'; time = 'o.observed_at'; end = 'o.end_at'; text = 'o.text';
+      const active = this.filterSql({});
+      conditions.push(history ? active.sql.replace('o.superseded=0', '1') : active.sql);
+      item = row => {
+        const data = this.observation(row);
+        return { ...base(row, { ...data, kind: row.kind }), title: 'Observation', text: data.text,
+          status: data.superseded ? 'superseded' : data.confidence, captureId: data.packetId };
+      };
+    } else if (kind === 'captures') {
+      table = 'captures'; time = end = 'o.captured_at';
+      text = "coalesce(json_extract(o.body,'$.vision'),'')";
+      item = row => {
+        const { imagePath: _path, sha256: _hash, ...data } = parsed<CaptureRecord>(row)!;
+        return { ...base(row, data), title: `Camera frame · ${data.status}`,
+          text: data.vision?.scene ?? data.error ?? 'Saved image; interpretation pending',
+          status: data.status, captureId: data.id };
+      };
+    } else if (kind === 'transcripts') {
+      table = 'transcripts'; time = 'o.start_at'; end = "json_extract(o.body,'$.endAt')";
+      text = "json_extract(o.body,'$.text')";
+      if (!history) conditions.push(`o.revision=(SELECT MAX(n.revision) FROM transcripts n
+        WHERE n.session_id=o.session_id AND n.stream_id=o.stream_id AND n.segment_id=o.segment_id)`);
+      item = row => {
+        const data = parsed<Transcript>(row)!;
+        const latest = this.db.prepare('SELECT MAX(revision) revision FROM transcripts WHERE session_id=? AND stream_id=? AND segment_id=?')
+          .get(data.sessionId, data.streamId, data.segmentId) as Row;
+        return { ...base(row, data), id: `${data.sessionId}/${transcriptKey(data)}`, title: 'Speech · unknown speaker', text: data.text,
+          status: data.revision < Number(latest.revision) ? 'superseded' : data.isFinal ? 'final' : 'partial' };
+      };
+    } else if (kind === 'entities') {
+      table = 'entities'; time = end = "json_extract(o.body,'$.createdAt')";
+      text = "json_extract(o.body,'$.label')||' '||json_extract(o.body,'$.description')||' '||json_extract(o.body,'$.attributes')";
+      conditions.push(`(json_extract(o.body,'$.kind')!='person' OR (NOT EXISTS(SELECT 1 FROM removed_people rp WHERE rp.id=o.id)
+        AND json_extract(o.body,'$.createdAt')>COALESCE((SELECT CAST(value AS REAL) FROM metadata WHERE key='people_reset_before'),-1)))`);
+      if (entityKind) { conditions.push("json_extract(o.body,'$.kind')=?"); args.push(entityKind); }
+      item = row => {
+        const data = this.hydrateEntity(parsed<Entity>(row)!);
+        return { ...base(row, { ...data }), title: data.label, text: data.description, status: data.kind, entityId: data.id };
+      };
+    } else {
+      table = 'state_history'; time = end = 'o.observed_at';
+      text = "json_extract(o.body,'$.summary')||' '||coalesce(json_extract(o.body,'$.location'),'')||' '||coalesce(json_extract(o.body,'$.activity'),'')";
+      if (!history) conditions.push('o.superseded=0');
+      // A person reset invalidates generated summaries, while original sources remain inspectable.
+      conditions.push(`o.observed_at>max(COALESCE((SELECT CAST(value AS REAL) FROM metadata WHERE key='people_reset_before'),-1),
+        COALESCE((SELECT CAST(value AS REAL) FROM metadata WHERE key='people_state_reset_before'),-1))`);
+      item = row => {
+        const data = parsed<CurrentState>(row)!;
+        return { ...base(row, { ...data, packetVersion: row.packet_version, superseded: Boolean(row.superseded) }),
+          id: `state-${row.version}`, title: data.location ?? 'Scene state', text: data.summary,
+          status: row.superseded ? 'superseded' : 'recorded', captureId: data.packetId };
+      };
+    }
+    if (query) { conditions.push(`instr(lower(${text}),lower(?))>0`); args.push(query); }
+    if (from !== undefined) { conditions.push(`${end}>=?`); args.push(from); }
+    if (to !== undefined) { conditions.push(`${time}<=?`); args.push(to); }
+    const snapshot = cursor?.snapshot ?? Number((this.db.prepare(`SELECT coalesce(MAX(rowid),0) n FROM ${table}`).get() as Row).n);
+    conditions.push('o.rowid<=?'); args.push(snapshot);
+    const count = this.db.prepare(`SELECT COUNT(*) n FROM ${table} o WHERE ${conditions.join(' AND ')}`).get(...args) as Row;
+    if (cursor) {
+      conditions.push(`(${time}<? OR (${time}=? AND o.rowid<?))`);
+      args.push(cursor.at, cursor.at, cursor.row);
+    }
+    const rows = this.db.prepare(`SELECT o.*,o.rowid AS rowid,${time} AS browse_at FROM ${table} o
+      WHERE ${conditions.join(' AND ')} ORDER BY ${time} DESC,o.rowid DESC LIMIT ?`).all(...args, limit + 1) as Row[];
+    const page = rows.slice(0, limit), last = page.at(-1);
+    const nextCursor = rows.length > limit && last ? Buffer.from(JSON.stringify({ filter: signature, snapshot,
+      at: Number(last.browse_at), row: Number(last.rowid) })).toString('base64url') : null;
+    return { kind, items: page.map(item), nextCursor, total: Number(count.n) };
   }
 
   capturesForSession(sessionId: string): CaptureRecord[] {

@@ -14,6 +14,12 @@ seen, recalls evidence, performs appropriate tasks, and delivers useful updates.
 Assume **one wearer** for the demo. Account identity does not verify the wearer;
 a visible person does not identify the speaker.
 
+The primary experience is **camera/scene + speech + face/identity streams → Jev
+→ agent → useful notifications**, with raw recording/memory running alongside
+classification. Natural speech requires no wake word or Send click. The manual
+Agent form is an explicit debug operation, not the main product flow. Keep Live,
+Memory and Debug in the same interface; changing views must not restart capture.
+
 The milestone integrates the current “Build 4D video scene demo” app with the
 general agent harness. That other thread is no longer editing; integration of its
 existing code is authorized. Pre-hardware QA uses **iPhone Continuity Camera and
@@ -28,7 +34,7 @@ work including files while reminders and other turns remain active.
 
 | Component | Responsibility |
 |---|---|
-| `memory/client/`, `memory/public/` | Main TypeScript capture/PWA interface at `localhost:8082`: camera/mic, five-second photos, live faces, introductions, memory search, agent input, tasks and notifications. |
+| `memory/client/`, `memory/public/` | Main TypeScript capture/PWA interface at `localhost:8082`: Live ambient capture and updates, complete paginated Memory browser, Debug manual operations and diagnostics. |
 | `tools/perception_lab/`, `hub/remember_hub/perception/` | Python local perception at `:8081`: InsightFace `buffalo_l`, Whisper Small/int8, shared gallery and Jev name-binding guard. |
 | `memory/src/` | Node22+ service: timestamped raw sources, same-photo face/speech joins, OpenAI vision, ordered scene/entity updates and existing SQLite memory. |
 | `memory/src/agent-bridge.ts` | Transactional outbox, historical backfill, corrections/removals, live faces, claimed camera interrupts and same-origin proxy to Bun. |
@@ -119,6 +125,12 @@ inspiration is allowed; **do not copy its implementation**. See
   Distinguish generated, delivered and acknowledged notifications.
 - The integrated page auto-connects through its server proxy. No token-paste flow;
   keep credentials out of browser bundles, logs and git.
+- Memory browsing is read-only and paginated across the complete retained store:
+  frames, transcript revisions across sessions, observations, entities, state,
+  agent facts/graph claims and all reminder states. Default to current valid
+  evidence; expose history explicitly and preserve identity deletion filters.
+  Use literal queries and source times (agent facts/reminders use recorded time).
+  The recent dashboard is not the full memory browser. GETs never wake an agent.
 - Merged Web Push uses the existing `web-push` backend via `/api/agent/push/*`.
   Prepare the key/registration before Enable is clickable; Safari's `subscribe()`
   must execute directly from that click. Every push calls `showNotification`,
@@ -206,14 +218,14 @@ cd ../agent && bun scripts/merged-perf.ts --live
 The old proposal's `make demo`/`make sim` are not current Makefile targets.
 
 Read [merged live checks](docs/MERGED_E2E_VALIDATION.md) and
-[Claude's UI checks](docs/MERGED_UI_VALIDATION.md) before claiming readiness. Real
+[Claude's current UI checks](docs/AMBIENT_MEMORY_UI_VALIDATION.md) before claiming readiness. Real
 provider checks exercised recall, reminders/parallel code, person reminders, fresh
 image interpretation, browser file work and cancellation with controlled inputs.
 Local speech used generated PCM; local face verification used an existing recorded
 gallery image without changing the gallery. Neither proves worn-device accuracy.
 
-Current checks: **443 Python, 84 agent, 293 memory and 107 client tests**;
-**52 isolated browser checks** and the **12/12 real-provider fixture replay**.
+Current checks: **443 Python, 88 agent, 297 memory and 123 client tests**;
+**102 isolated browser checks** and the earlier **12/12 real-provider fixture replay**.
 The merged push route also sent a test accepted by the existing browser's real
 FCM endpoint. That verifies the push service, not an observed device banner.
 

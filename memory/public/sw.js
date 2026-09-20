@@ -7,8 +7,9 @@
 // capture keeps going) or open the root with ?notification=<id>; navigation is same-origin only. Push arrival is
 // also posted to open windows so the page can mark delivery — the page itself never shows system notifications.
 // Displaying a notification here is not proof of OS/Apple background delivery.
-const VERSION = 'kawk-memory-shell-v2';
-const SHELL = ['/', '/index.html', '/styles.css', '/client.js', '/manifest.webmanifest', '/icons/icon.svg'];
+const VERSION = 'kawk-memory-shell-v3';
+const SHELL = ['/', '/index.html', '/styles.css', '/client.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png', '/icons/apple-touch-icon.png'];
+const NOTIFICATION_ICON = '/icons/icon-192.png';
 const TAG_PREFIX = 'kawk-notification:';
 const MAX_ID = 200, MAX_TITLE = 120, MAX_BODY = 2000, MAX_RECENT = 200;
 const recentIds = new Map(); // id → shown-at, informational only (tells the page a repeat was a duplicate); never used to skip display
@@ -69,7 +70,7 @@ async function handlePush(event) {
   const p = parsePushPayload(raw);
   if (!p.ok) {
     // Something was pushed to this device but not in the agent's shape: say so, without inventing content.
-    await self.registration.showNotification('KAWK', { body: `Update received but not readable (${unreadable || p.reason}).`, tag: `${TAG_PREFIX}unreadable`, renotify: false, icon: '/icons/icon.svg', data: { url: `${self.location.origin}/`, unreadable: true } });
+    await self.registration.showNotification('KAWK', { body: `Update received but not readable (${unreadable || p.reason}).`, tag: `${TAG_PREFIX}unreadable`, renotify: false, icon: NOTIFICATION_ICON, data: { url: `${self.location.origin}/`, unreadable: true } });
     return;
   }
   const tag = `${TAG_PREFIX}${p.id}`;
@@ -79,7 +80,7 @@ async function handlePush(event) {
   // the same id therefore still calls showNotification, but with the SAME tag and renotify:false: the existing banner
   // is replaced in place — one notification identity per id, no second alert. Nothing is suppressed client-side.
   let displayError = null;
-  try { await self.registration.showNotification(p.title, { body: p.body, tag, renotify: false, icon: '/icons/icon.svg', badge: '/icons/icon.svg', data: { id: p.id, url: p.url } }); rememberId(p.id); } // remembered only after a successful display
+  try { await self.registration.showNotification(p.title, { body: p.body, tag, renotify: false, icon: NOTIFICATION_ICON, badge: NOTIFICATION_ICON, data: { id: p.id, url: p.url } }); rememberId(p.id); } // remembered only after a successful display
   catch (e) { displayError = e; }
   // Tell open windows AFTER the display settled, so a page reacting to the push (marking, acknowledging) never races the banner.
   const windows = await sameOriginWindows();

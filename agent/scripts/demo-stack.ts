@@ -58,7 +58,7 @@ process.once("SIGTERM", () => void stop());
 try {
   children.push(Bun.spawn([process.execPath, "src/main.ts"], { cwd: resolve(root, "agent"), env, stdout: "inherit", stderr: "inherit" }));
   children.push(Bun.spawn(["node", "--import", "tsx", "src/main.ts"], { cwd: resolve(root, "memory"), env, stdout: "inherit", stderr: "inherit" }));
-  console.log(`Demo UI: http://localhost:${memoryPort} — press Start, then choose camera and microphone.`);
+  console.log(`Demo UI: http://localhost:${memoryPort} — choose camera and microphone, then press Start. Natural speech activates Jev automatically.`);
   console.log("Local perception is reused; stopping this command leaves it running.");
   if (process.env.MEMORY_TLS_CERT) console.log(`Phone PWA: https://<certificate hostname>:${ports[2]} — use the same Wi-Fi and trust the certificate on the phone.`);
   const exit = await Promise.race(children.map(c => c.exited));

@@ -2,103 +2,126 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>KAWK</title>
 <meta name="theme-color" content="#0e1013">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="KAWK">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icons/icon.svg">
+<link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<header>
-  <h1>KAWK <span class="sub">memory + agent</span></h1>
+<header class="top">
+  <h1>KAWK <span class="sub">ambient memory</span></h1>
+  <nav class="nav" role="tablist" aria-label="Views">
+    <button id="nav-live" type="button" role="tab" aria-selected="true" aria-controls="view-live">Live</button>
+    <button id="nav-memory" type="button" role="tab" aria-selected="false" aria-controls="view-memory">Memory</button>
+    <button id="nav-debug" type="button" role="tab" aria-selected="false" aria-controls="view-debug">Debug</button>
+  </nav>
+  <button id="live-badge" type="button" class="badge" title="Recording state; opens Live">idle</button>
+</header>
+
+<!-- ===================== LIVE: the wearer-facing experience ===================== -->
+<section id="view-live" class="view" role="tabpanel" aria-labelledby="nav-live">
   <div class="controls">
     <button id="start" type="button">Start</button>
     <button id="stop" type="button" disabled>Stop</button>
     <label>Camera <select id="camera"><option value="">Default camera</option></select></label>
     <label>Microphone <select id="mic"><option value="">Default microphone</option></select></label>
     <label>Speech <select id="speech-backend" title="Which Whisper transcribes the microphone. Applies at Start; no hidden fallback."></select></label>
-    <span id="speech-note" class="note"></span>
     <button id="refresh" type="button" class="quiet">Refresh devices</button>
-    <a href="http://localhost:8081/faces" target="_blank" rel="noopener">Enrolled faces (lab, port 8081)</a>
   </div>
-  <p id="how-to" class="howto"><b>How to use:</b> <b>Start</b> records camera + microphone (a photo every 5 s, live speech) until <b>Stop</b>. <b>Agent</b> box (right) = ask questions or give instructions. <b>Memory search</b> (bottom right) = look through stored history. Nothing records until you press Start.</p>
-  <p id="config-note" class="note">loading config…</p>
-  <details class="page-details"><summary>Details: what happens when</summary>
-    <p class="note">Page load only reads config/dashboard/agent status and lists devices. Start creates a session, acquires camera + microphone and opens face/speech sockets; Search runs only on submit. Capture cadence is fixed; memory completion is not promised every 5 s. While running, the agent may request one immediate extra photo (status row “Agent capture”). <span id="pwa-note"></span></p>
-  </details>
-</header>
+  <p id="speech-note" class="note"></p>
+  <p id="how-to" class="howto"><b>Just talk and look around.</b> After <b>Start</b>, three timestamped streams are saved continuously: photos (one every 5 s), speech and face identities. There is no wake word and nothing to send: everything is kept, and KAWK decides on its own when assistance is useful and posts it under <b>Updates from KAWK</b> automatically. <b>Memory</b> shows everything saved. Nothing records until you press Start.</p>
 
-<main>
-  <section class="col">
-    <div class="preview">
-      <video id="video" autoplay muted playsinline></video>
-      <canvas id="overlay"></canvas>
-    </div>
-    <p id="preview-note" class="note mono">preview off</p>
-    <p id="intro-note" class="note intro">Introductions: press Start, then say something like “this is Sam” while their face is visible.</p>
-    <details class="intro-details">
-      <summary>Introduction details</summary>
-      <p id="intro-detail" class="note mono small">—</p>
-    </details>
-
-    <h2>Components / status / latency</h2>
-    <div id="status" class="status mono"></div>
-    <details class="errors">
-      <summary id="errors-summary">Errors (0)</summary>
-      <ul id="errors-list" class="mono"></ul>
-    </details>
-    <details>
-      <summary>Recent capture submissions</summary>
-      <ul id="submissions-list" class="mono"></ul>
-    </details>
-
-    <h2>Live transcript (unknown speaker)</h2>
-    <p id="transcript-note" class="note">stopped · press Start to begin listening</p>
-    <ul id="transcript" class="transcript"></ul>
-  </section>
-
-  <section class="col">
-    <h2>Agent</h2>
-    <p id="agent-status" class="note mono">agent status not loaded</p>
-    <form id="agent-form" class="agent-form">
-      <input id="agent-input" type="text" placeholder="ask or instruct the agent, e.g. what did I leave on the desk" autocomplete="off" maxlength="2000">
-      <button id="agent-send" type="submit">Send</button>
-    </form>
-    <p id="agent-note" class="note">ask or instruct here; works with the camera stopped, and a running session is attached automatically</p>
-    <div class="push">
-      <div class="push-actions">
-        <button id="push-enable" type="button" disabled>Enable notifications</button>
-        <button id="push-prepare" type="button" class="quiet" hidden>Retry push setup</button>
-        <button id="push-disable" type="button" class="quiet" hidden>Disable notifications</button>
-        <button id="push-test" type="button" class="quiet" hidden>Send test push</button>
-        <button id="push-clear" type="button" class="quiet tiny">Clear status</button>
+  <div class="live-grid">
+    <div class="col">
+      <div class="preview">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="overlay"></canvas>
       </div>
-      <p id="push-status" class="note mono">notifications: checking…</p>
-      <p id="push-guidance" class="note"></p>
-      <p id="push-delivery" class="note mono small"></p>
+      <p id="preview-note" class="note mono">preview off</p>
+      <p id="intro-note" class="note intro">Introductions: press Start, then say something like “this is Sam” while their face is visible.</p>
+      <details class="intro-details">
+        <summary>Introduction details</summary>
+        <p id="intro-detail" class="note mono small">—</p>
+      </details>
+
+      <h2>Live transcript (unknown speaker)</h2>
+      <p id="transcript-note" class="note">stopped · press Start to begin listening</p>
+      <ul id="transcript" class="transcript"></ul>
     </div>
-    <ul id="agent-notifications" class="list agent-list"><li class="empty">no agent answers yet</li></ul>
-    <details class="agent-tasks-details" open>
-      <summary id="agent-tasks-summary">Tasks (0)</summary>
-      <ul id="agent-tasks" class="list agent-list"><li class="empty">no tasks</li></ul>
-    </details>
 
-    <h2>Current state</h2>
-    <div id="state"><p class="empty">loading…</p></div>
+    <div class="col">
+      <h2>Now</h2>
+      <div id="live-summary" class="summary mono"></div>
 
-    <h2>Server pipeline</h2>
-    <p id="pipeline" class="mono small">—</p>
-    <p id="dash-note" class="note">dashboard not loaded</p>
+      <h2>Updates from KAWK</h2>
+      <p id="agent-status" class="note mono">agent status not loaded</p>
+      <ul id="agent-notifications" class="list agent-list"><li class="empty">no updates yet — they appear here when KAWK has something useful to say</li></ul>
+      <details class="agent-tasks-details">
+        <summary id="agent-tasks-summary">Tasks (0)</summary>
+        <ul id="agent-tasks" class="list agent-list"><li class="empty">no tasks</li></ul>
+      </details>
 
-    <h2>Recent captures / packets</h2>
-    <ul id="captures" class="list"></ul>
+      <h2>Notifications on this device</h2>
+      <div class="push">
+        <div class="push-actions">
+          <button id="push-enable" type="button" disabled>Enable notifications</button>
+          <button id="push-prepare" type="button" class="quiet" hidden>Retry push setup</button>
+          <button id="push-disable" type="button" class="quiet" hidden>Disable notifications</button>
+          <button id="push-test" type="button" class="quiet" hidden>Send test push</button>
+          <button id="push-clear" type="button" class="quiet tiny">Clear status</button>
+        </div>
+        <p id="push-status" class="note mono">notifications: checking…</p>
+        <p id="push-guidance" class="note"></p>
+        <p id="push-delivery" class="note mono small"></p>
+      </div>
 
-    <h2>Entities</h2>
-    <ul id="entities" class="list"></ul>
+      <h2>Install as an app</h2>
+      <div class="install">
+        <p id="install-status" class="note">checking…</p>
+        <ol id="install-steps" class="steps"></ol>
+        <button id="pwa-install" type="button" hidden>Install app</button>
+        <p id="pwa-note" class="note small"></p>
+      </div>
+    </div>
+  </div>
+</section>
 
-    <h2>People</h2>
+<!-- ===================== MEMORY: browse everything that was kept ===================== -->
+<section id="view-memory" class="view" role="tabpanel" aria-labelledby="nav-memory" hidden>
+  <h2>Browse memory</h2>
+  <p class="note">Everything KAWK kept, newest first. Reading here never records, deletes or notifies. Times are source times (when it was seen or said) unless marked “recorded”.</p>
+  <form id="browse-form" class="browse">
+    <div id="browse-kinds" class="chips" role="radiogroup" aria-label="Category"></div>
+    <div class="browse-row">
+      <label id="browse-entity-kind-label" hidden>Entity kind <select id="browse-entity-kind"><option value="">any</option><option value="person">people</option><option value="object">objects</option><option value="place">places</option><option value="event">events</option></select></label>
+      <input id="browse-query" type="search" placeholder="filter by exact words, e.g. keys" autocomplete="off" maxlength="500">
+      <label>from <input id="browse-from" type="datetime-local"></label>
+      <label>to <input id="browse-to" type="datetime-local"></label>
+      <label class="check"><input id="browse-history" type="checkbox"> include superseded &amp; revisions</label>
+      <button type="submit">Apply</button>
+      <button id="browse-reset" type="button" class="quiet">Reset</button>
+      <button id="browse-refresh" type="button" class="quiet">Refresh</button>
+    </div>
+  </form>
+  <p id="browse-note" class="note mono">open this view to load memory</p>
+  <ul id="browse-list" class="cards"><li class="empty">nothing loaded yet</li></ul>
+  <div class="more">
+    <button id="browse-more" type="button" hidden>Load more</button>
+    <button id="browse-retry" type="button" class="quiet" hidden>Retry failed categories</button>
+  </div>
+
+  <h2>Current state</h2>
+  <div id="state"><p class="empty">loading…</p></div>
+
+  <details id="people-details" class="people-details">
+    <summary>People &amp; recognition</summary>
     <p id="people-note" class="note">people not loaded</p>
     <ul id="people" class="list"></ul>
     <div class="people-actions">
@@ -106,8 +129,10 @@
       <span id="people-reset-confirm"></span>
     </div>
     <p id="people-action-note" class="note">Deleting removes recognition and profile and hides person-linked memories from active retrieval; source photos and transcripts are retained. Camera and speech keep running.</p>
+  </details>
 
-    <h2>Memory search</h2>
+  <details id="search-details" class="search-details">
+    <summary>Indexed search (keyword index, optional semantic)</summary>
     <form id="search-form" class="search">
       <input id="search-query" type="search" placeholder="Search a word or exact phrase, e.g. blue bowl" autocomplete="off">
       <select id="search-mode" title="Keyword: exact-term match over stored observations. Semantic: embedding distance."></select>
@@ -119,8 +144,52 @@
     </form>
     <p id="search-note" class="note">results appear after submit (keyword by default; semantic optional); each cites its source image and transcript keys</p>
     <ul id="search-results" class="list"></ul>
-  </section>
-</main>
+  </details>
+</section>
+
+<!-- ===================== DEBUG: manual operation and technical diagnostics ===================== -->
+<section id="view-debug" class="view" role="tabpanel" aria-labelledby="nav-debug" hidden>
+  <h2>Manual operation</h2>
+  <p class="note">Debug only. The wearer never needs this: KAWK acts on natural speech. Use it to inject a request or instruction by hand.</p>
+  <form id="agent-form" class="agent-form">
+    <input id="agent-input" type="text" placeholder="manual request to the agent, e.g. what did I leave on the desk" autocomplete="off" maxlength="2000">
+    <button id="agent-send" type="submit">Send</button>
+  </form>
+  <p id="agent-note" class="note">works with the camera stopped; a running session is attached automatically · answers appear under Live → Updates</p>
+  <p id="config-note" class="note">loading config…</p>
+
+  <div class="debug-grid">
+    <div class="col">
+      <h2>Components / status / latency</h2>
+      <div id="status" class="status mono"></div>
+      <details class="errors">
+        <summary id="errors-summary">Errors (0)</summary>
+        <ul id="errors-list" class="mono"></ul>
+      </details>
+      <details>
+        <summary>Recent capture submissions</summary>
+        <ul id="submissions-list" class="mono"></ul>
+      </details>
+      <details class="page-details"><summary>What happens when</summary>
+        <p class="note">Page load only reads config/dashboard/agent status and lists devices. Start creates a session, acquires camera + microphone and opens face/speech sockets. Switching views never starts, stops or reloads anything. Capture cadence is fixed; memory completion is not promised every 5 s. While running, the agent may request one immediate extra photo (status row “Agent capture”).</p>
+      </details>
+    </div>
+    <div class="col">
+      <h2>Server pipeline</h2>
+      <p id="pipeline" class="mono small">—</p>
+      <p id="dash-note" class="note">dashboard not loaded</p>
+
+      <h2>Recent captures / source packets</h2>
+      <p class="note">Last 12 frames from the dashboard poll. The full photo history is under Memory → Photos.</p>
+      <ul id="captures" class="list"></ul>
+
+      <h2>Recently seen entities</h2>
+      <p class="note">Last 30 from the dashboard poll. Browse all entities under Memory → Entities.</p>
+      <ul id="entities" class="list"></ul>
+      <p class="note"><a href="http://localhost:8081/faces" target="_blank" rel="noopener">Enrolled faces (perception lab, port 8081)</a></p>
+    </div>
+  </div>
+</section>
 <script type="module" src="/client.js"></script>
 </body>
 </html>

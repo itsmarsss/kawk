@@ -45,6 +45,13 @@ test('merged push proxy keeps authentication server-side and forwards DELETE bod
     assert.equal(requests.at(-1)?.method, 'DELETE');
     assert.deepEqual(JSON.parse(requests.at(-1)!.body!), { endpoint: 'https://push.example/a' });
     assert.ok(requests.every(r => r.url.startsWith('http://agent.test/v1/push/')));
+    const query = '?kind=facts&query=blue%20bowl&limit=2&cursor=a%2Bb';
+    assert.equal((await fetch(base + '/api/agent/memory/browse' + query)).status, 200);
+    assert.equal(requests.at(-1)?.url, 'http://agent.test/v1/memory/browse' + query);
+    assert.equal(requests.at(-1)?.token, `Bearer ${'x'.repeat(48)}`);
+    const count = requests.length;
+    assert.equal((await fetch(base + '/api/agent/memory/browse', { method: 'POST' })).status, 404);
+    assert.equal(requests.length, count, 'browse exposes no write-through method');
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); await bridge.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

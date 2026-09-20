@@ -7,7 +7,7 @@ export interface SessionInfo { id: string; startedAt: number }
 export interface HttpResult { ok: boolean; status: number; text: string }
 
 // Every request is bounded: a stalled endpoint must never hold a capture/revision slot or block Stop.
-export const TIMEOUTS = { get: 8000, capture: 15000, transcript: 8000, search: 20000, session: 8000, delete: 15000 } as const;
+export const TIMEOUTS = { get: 8000, capture: 15000, transcript: 8000, search: 20000, session: 8000, delete: 15000, browse: 20000 } as const;
 export function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(new Error(`timeout after ${timeoutMs} ms`)), timeoutMs);
@@ -50,6 +50,8 @@ export const api = {
   postCapture: (body: CaptureInput) => postRaw('/api/captures', body, TIMEOUTS.capture),
   postTranscript: (body: Transcript) => postRaw('/api/transcripts', body, TIMEOUTS.transcript),
   frameUrl: (captureId: string) => `/api/frames/${encodeURIComponent(captureId)}`,
+  /** Memory browser page (GET only). `url` comes from `browseUrl()` and targets /api/memory/browse or /api/agent/memory/browse. */
+  browse: (url: string) => getJsonTimeout<unknown>(url, TIMEOUTS.browse),
   // People: provisional (in-memory) and enrolled (gallery) persons. Deletes are explicit user actions only.
   people: () => getJson<PeopleResponse>('/api/people'),
   deletePerson: (id: string) => deleteJson<{ deleted: boolean }>(`/api/people/${encodeURIComponent(id)}`, TIMEOUTS.delete),

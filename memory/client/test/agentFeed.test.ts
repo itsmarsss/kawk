@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { NotificationLedger, NotificationStream, describeAgentConnection, isActiveTask, parseNotification, refView, taskResultText, type AgentNotification, type EventSourceLike, type StreamState } from '../src/agentFeed.ts';
+import { NotificationLedger, NotificationStream, describeAgentConnection, isActiveTask, parseNotification, refView, taskResultText, taskResultView, type AgentNotification, type EventSourceLike, type StreamState } from '../src/agentFeed.ts';
 import { FakeClock } from './fakes.ts';
 
 class FakeEventSource implements EventSourceLike {
@@ -149,6 +149,16 @@ test('task and connection helpers', () => {
   assert.equal(isActiveTask('superseded'), false, 'superseded by a newer task: finished, no Cancel');
   assert.equal(isActiveTask('Superseded'), false);
   assert.equal(taskResultText({ summary: 'found it' }), 'found it'); assert.equal(taskResultText(null), null); assert.equal(taskResultText('x'), 'x');
+  // live bridge shape: a JSON-encoded string with receipts → only the answer text is wearer-facing; receipts stay raw
+  const encoded = '{"text":"In Toronto, it’s overcast and 14°C.","refs":[{"eventId":"4467b181","revision":0}],"confidence":0.92,"notify":true,"reviewRejected":false}';
+  const v = taskResultView(encoded);
+  assert.equal(v.text, 'In Toronto, it’s overcast and 14°C.'); assert.equal(v.structured, true); assert.match(v.raw ?? '', /"confidence": 0.92/); assert.doesNotMatch(v.text ?? '', /refs|confidence/);
+  assert.equal(taskResultText(encoded), 'In Toronto, it’s overcast and 14°C.');
+  const abstained = taskResultView('{"text":"","refs":[{"eventId":"x","revision":0}],"confidence":1,"notify":false}');
+  assert.equal(abstained.text, null); assert.equal(abstained.structured, true); assert.match(abstained.raw ?? '', /"notify": false/);
+  assert.deepEqual(taskResultView('{not json'), { text: '{not json', raw: null, structured: false });
+  assert.deepEqual(taskResultView({ refs: [] }), { text: null, raw: '{\n  "refs": []\n}', structured: true });
+  assert.deepEqual(taskResultView(''), { text: null, raw: null, structured: false });
   const open: StreamState = { phase: 'open', attempt: 0, connections: 1, lastEventAt: null, lastError: null };
   assert.deepEqual(describeAgentConnection({ connected: true, bridge: { pending: 0, lastError: null }, agent: { running: true, activeTurns: 1, lastError: null } }, null, open),
     { text: 'connected · running · 1 active turn(s) · 0 pending · live updates on', tone: 'ok' });

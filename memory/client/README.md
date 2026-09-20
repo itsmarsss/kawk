@@ -1,6 +1,11 @@
-# KAWK memory testing client
+# KAWK memory client (Live / Memory / Debug)
 
-Browser page for `memory/` (port 8082). Source in `client/src`, pure-logic tests in `client/test`,
+Browser page for `memory/` (port 8082): one document with three views. **Live** = Start/Stop, device + speech
+selectors, preview, live transcript, the Now block, Updates from KAWK, device notifications and install status.
+**Memory** = browse everything kept (`/api/memory/browse` + `/api/agent/memory/browse`), current state, People, indexed
+search. **Debug** = manual agent form ("Manual operation"), component status rows, pipeline, recent captures/entities.
+Switching views only toggles presentation (Live is kept painted off-stage, never `display:none`, so a running preview keeps
+decoding); the Run and its sockets/timers live in module state. Source in `client/src`, pure-logic tests in `client/test`,
 bundle in `public/client.js` (served with `public/index.html` and `public/styles.css`).
 
 Commands (run from `memory/`):
@@ -34,6 +39,11 @@ the click** (Safari user-activation rule; the browser prompts there) then POSTs 
 rollback; Disable = unsubscribe + DELETE {endpoint}; test push; delivery counters; service-worker message parsing;
 `?notification=` id) ·
 `runControl.ts` `RunSwitcher` (exactly one Run per Start, a Start during a switch is ignored) + `singleFlight` polls ·
+`views.ts` hash ↔ view + presentation (shown / offstage / hidden) · `memoryBrowse.ts` browse contract (URL builder for both
+endpoints, lenient page parser, `BrowseController`: one generation per Apply with stale replies dropped, `all` fans out to
+every kind with per-kind cursors/totals/errors, Load more / Retry, `describeStatus` honesty labels, `itemFacts` readable
+details) · `install.ts` install status/steps (HTTPS, iOS Home Screen, Chromium prompt, Safari Add to Dock; never claims
+push is verified) ·
 `main.ts` DOM incl. the compact Agent section (status with last-event age, ask, answers + Ack + push marker/ack
 reason, tasks + Cancel), the Notifications block (Enable/Disable/Send test push/Clear status), People list with
 confirmed DELETE /api/people[/:id], the plain-language introduction line (`summarizeIntroduction`), backlog source
@@ -47,11 +57,17 @@ repeat replaces the banner instead of alerting again; nothing is suppressed clie
 notification (click / `?notification=`) or a push displayed while the page is visible+focused acknowledges it;
 SSE arrival never does.
 
-Browser QA (no camera, isolated mock server on a random port; needs `../agent/node_modules/playwright`):
+Browser QA (isolated mock server on a random port with a synthetic browse fixture; Chromium fake media devices; needs
+`../agent/node_modules/playwright`; the mock has no WebSocket server, so face/speech sockets report errors while photos still post):
 
 ```sh
-node client/qa/browserQa.mjs        # 52 checks (incl. Web Push with a fake PushManager + CDP-injected push events into the
-                                    # real service worker; needs the full Chromium channel for notification permission),
-                                    # screenshots in /tmp/kawk-merged-ui-qa/
+node client/qa/browserQa.mjs        # 102 checks: navigation with a REAL Start on Chromium's fake camera/mic (captures keep
+                                    # posting while Memory/Debug are shown), memory browser (paging past 40, literal/date/
+                                    # category/entity-kind filters, history, stale replies, per-kind errors + Retry, empty,
+                                    # drilldown, escaping), Debug manual form, agent feed, PWA icons, Web Push (fake
+                                    # PushManager + CDP-injected push events into the real service worker; needs the full
+                                    # Chromium channel for notification permission). Screenshots in /tmp/kawk-merged-ui-qa/
 node client/qa/mockServer.mjs       # standalone mock of the memory+agent HTTP contract
+node client/qa/liveReadOnly.mjs [url] # READ-ONLY check against a real server (default :8082): every non-GET request is aborted and
+                                    # reported; loads Memory + Live, expands cards, screenshots live-backend-*.png. Never starts capture, acks or sends.
 ```

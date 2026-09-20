@@ -233,6 +233,8 @@ export class AgentBridge {
     app.get('/api/agent/source/:id', (req, res) => res.json({ valid: Boolean(this.store.currentObservation(req.params.id)) }));
     app.use(async (req, res, next) => {
       const path = req.path === '/api/agent/events' ? '/v1/notifications/stream'
+        : req.path === '/api/agent/memory/browse' && req.method === 'GET'
+          ? '/v1/memory/browse' + new URL(req.originalUrl, 'http://local').search
         : req.path.startsWith('/api/agent/notifications') ? req.path.replace('/api/agent', '/v1')
         : req.path.startsWith('/api/agent/tasks') ? req.path.replace('/api/agent', '/v1')
         : /^\/api\/agent\/push\/(key|subscriptions|status|test)$/.test(req.path) ? req.path.replace('/api/agent', '/v1')

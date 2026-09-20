@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { MemoryPipeline } from './pipeline.js';
 import { peopleRoutes } from './people.js';
 import type { AgentBridge } from './agent-bridge.js';
+import { BrowseQuery } from './browse.js';
 
 interface ServerOptions {
   perceptionUrl: string; publicDir: string; provider: string; model: string; writerModel?: string;
@@ -47,6 +48,7 @@ export function createMemoryServer(pipeline: MemoryPipeline, options: ServerOpti
   app.use(express.json({ limit: '16mb' }));
   options.bridge?.routes(app);
   app.get('/api/health', (_req, res) => res.json({ ok: true, pipeline: pipeline.snapshot() }));
+  app.get('/api/memory/browse', (req, res) => res.json(pipeline.store.browse(BrowseQuery.parse(req.query))));
   app.get('/api/config', (_req, res) => res.json({ captureIntervalMs: 5000,
     transcriptWords: pipeline.transcriptWords, perceptionUrl: options.perceptionUrl,
     provider: options.provider, model: options.model, writerModel: options.writerModel ?? options.model,

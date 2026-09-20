@@ -155,3 +155,45 @@ age **143 → 83 seconds**, with zero failed records and no reported pipeline
 errors. Capture stayed running. This demonstrates catch-up in that two-minute
 window, not instant scene updates or a long-run latency guarantee. The sample
 is preserved privately in `.context/merged-demo/post-repair-soak.jsonl`.
+
+## Ambient interface and full memory inspection — September 20
+
+The primary flow is camera/scene, speech and fresh face evidence into Jev, then
+agent work and useful updates. Recording does not wait for Jev. Manual Send is
+an explicit Debug operation. Live, Memory and Debug share the same capture
+controller; navigating between them must not reacquire devices or stop recording.
+
+New read-only, cursor-paginated endpoints expose observations, retained photos,
+transcripts across sessions, entities, state history, valid agent facts/graph
+claims, and reminders in every state. Literal text and time filters apply across
+the retained store. Source text, intervals and revision evidence remain available;
+deleted identities and invalidated claims do not reappear as active knowledge.
+See [the memory browser contract](MEMORY_BROWSER.md).
+
+Backend checks passed **443 Python, 88 agent and 297 memory tests**. Added checks
+cover paging beyond 100 records, stable page boundaries during backdated inserts,
+filter-bound cursors, owner isolation, literal wildcard characters, cross-session
+transcript revisions, deleted identities, source invalidation and read-only HTTP
+access. All seven categories were also read through the running merged proxy.
+
+A consistent private copy held 61,518 observations, 2,613 photos, 16 transcript
+segments, 1,118 entities and 2,607 states. Reading one bounded page, including its
+count, took **0–20 ms** by category. These are local database timings, not browser
+rendering or end-to-end agent latency. Private evidence:
+`.context/merged-demo/browse-probe-results.json` in the space.
+
+The local perception process was found stopped and restarted with the existing
+models/gallery. A generated speech fixture passed through the merged WebSocket
+proxy to local Whisper: ready in **648 ms**, correct final text in **4,562 ms**.
+This did not insert a real transcript or trigger an agent task. Private evidence:
+`.context/merged-demo/local-speech-recheck.json`.
+
+The real Mac browser listed its built-in camera/microphone, but no Continuity
+iPhone camera during inspection. Reading the live Memory view did not start
+recording. The older active capture session kept posting photos marked
+audio/face unavailable after the outage; it needs Stop/reload/Start to reconnect
+after exhausting its bounded retries. A healthy service alone does not prove
+an existing browser run has reconnected all streams.
+iPhone selection, physical capture quality, installation and OS push
+banners remain device checks. Claude's UI and isolated browser results are in
+[the ambient UI report](AMBIENT_MEMORY_UI_VALIDATION.md).

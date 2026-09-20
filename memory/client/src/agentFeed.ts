@@ -73,12 +73,32 @@ export function refView(ref: unknown): RefView {
 /** Statuses after which a task can no longer be cancelled. `abstained`/`superseded` are Jev-gated endings. */
 const TERMINAL = new Set(['done', 'completed', 'complete', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled', 'aborted', 'expired', 'rejected', 'abstained', 'superseded']);
 export function isActiveTask(status: unknown): boolean { return typeof status === 'string' && !TERMINAL.has(status.toLowerCase()); }
-export function taskResultText(result: unknown): string | null {
-  if (result === null || result === undefined) return null;
-  if (typeof result === 'string') return result;
-  if (typeof result === 'object') { const o = result as Record<string, unknown>; for (const k of ['text', 'summary', 'answer', 'message']) if (typeof o[k] === 'string') return o[k] as string; return JSON.stringify(result).slice(0, 300); }
-  return String(result);
+/**
+ * A task's `result` may be a plain string, a structured object or (as the live bridge returns it) a JSON-encoded string
+ * such as `'{"text":"…","refs":[…],"confidence":0.92}'`. The wearer-facing line is the answer text only; refs, confidence
+ * and review flags are receipts and stay in `raw` for the diagnostic expansion. An encoded/structured result with an empty
+ * text (e.g. an abstained turn) yields `text: null` so nothing invented is shown.
+ */
+export interface TaskResultView { text: string | null; raw: string | null; structured: boolean }
+const ANSWER_KEYS = ['text', 'summary', 'answer', 'message'];
+export function taskResultView(result: unknown): TaskResultView {
+  if (result === null || result === undefined) return { text: null, raw: null, structured: false };
+  let value: unknown = result;
+  if (typeof value === 'string') {
+    const t = value.trim();
+    if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) { try { value = JSON.parse(t); } catch { /* an ordinary string that merely looks like JSON */ } }
+    if (typeof value === 'string') return { text: value || null, raw: null, structured: false };
+  }
+  if (typeof value === 'object') {
+    const raw = JSON.stringify(value, null, 2);
+    const o = value as Record<string, unknown>;
+    for (const k of ANSWER_KEYS) if (typeof o[k] === 'string') return { text: (o[k] as string).trim() || null, raw, structured: true };
+    return { text: null, raw, structured: true };
+  }
+  return { text: String(value), raw: null, structured: false };
 }
+/** Answer text only (see `taskResultView`); null when there is nothing wearer-facing to show. */
+export function taskResultText(result: unknown): string | null { return taskResultView(result).text; }
 
 export interface AgentStatusView { text: string; tone: '' | 'ok' | 'warn' | 'bad' }
 export function describeAgentConnection(status: { connected?: boolean; bridge?: { pending?: number; lastError?: string | null } | null; agent?: { running?: boolean; activeTurns?: number; lastError?: string | null } | null } | null, statusError: string | null, stream: StreamState, now: number | null = null): AgentStatusView {

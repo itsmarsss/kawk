@@ -6,18 +6,15 @@ identities and image descriptions to update persistent people, objects, places a
 events, plus a separate agent that answers questions and acts when useful.
 
 ```mermaid
-flowchart TD
-  A[Camera and microphone] --> B[Local Python faces and Whisper]
-  A --> C[Scene memory service :8082]
-  B --> C
-  C --> D[SQLite sources and entity history]
-  C --> E[Durable event outbox]
-  E --> F[Jev activation in Bun :8091]
-  F --> G[OpenAI agent turns]
-  G --> H[History search, reminders, code, browser]
-  G --> I[Extra camera request]
-  I --> A
-  H --> J[Live notification feed]
+flowchart LR
+  A[Camera / scene] --> D[Timestamped source journal]
+  B[Speech] --> D
+  C[Faces / identities] --> D
+  D --> E[Jev]
+  D --> F[Persistent memory]
+  E --> G[Agent]
+  G <--> F
+  G --> H[Useful updates]
 ```
 
 ## Start
@@ -48,14 +45,24 @@ against that directory. Agent data defaults to `agent/data/`.
 
 ### Use the app
 
-1. **Agent → Send** asks a question or runs a task. It works with capture stopped.
-   Try: “Remind me in 20 seconds to stretch,” then “Use code to calculate 17 × 23.”
-   Answers appear beneath the input; Tasks shows progress and Cancel.
-2. **Start** enables the selected camera and microphone. On the serving Mac,
-   choose iPhone Continuity Camera, laptop microphone and local speech. Natural
-   conversation can then trigger Jev without a wake word.
-3. **Search** queries stored observations. It is separate from asking the agent;
-   keyword mode matches literal text rather than interpreting a question.
+After updating the app or a prolonged perception outage, stop the old run and
+reload the page before testing. Face/speech reconnect attempts are bounded;
+camera photos may keep arriving while those streams show unavailable. A fresh
+Start reconnects them. Check **Live → Now** for all three stream states.
+
+1. **Live → Start** enables the selected camera and microphone. On the Mac running
+   the browser, choose iPhone Continuity Camera, laptop microphone and local speech.
+   Speak naturally: “Where did I put my keys?” or “Remind me in 20 seconds to stretch.”
+   Camera/scene, speech and face identities feed Jev automatically; Jev decides
+   when the agent should act and produce a useful update. No wake word or Send
+   click is required. Recording and memory persistence continue independently.
+2. **Memory** browses the full retained history, with categories, literal text/date
+   filters and pagination. It includes photos, speech across sessions, observations,
+   people/objects/places/events, state changes, agent facts and reminders. Inspect
+   source evidence and optionally older revisions. Browsing does not trigger tasks.
+3. **Debug → Manual operation → Send** is a deliberate test/override path. It also
+   works with capture stopped; it is not the normal ambient experience. Technical
+   pipeline/packet details remain here. Changing views leaves capture running.
 4. Source age and the memory queue describe derived scene-memory freshness.
    Accepted uploads, completed interpretations and failed interpretations are
    distinct. Transcripts and interpreted camera events reach the agent before
@@ -65,6 +72,11 @@ If you are connected to the serving Mac over SSH, `localhost` on your own laptop
 is a different machine. Forward the UI with `ssh -L 8082:127.0.0.1:8082 user@mac`,
 then visit your laptop's localhost:8082. Capture uses the browser's own devices;
 Continuity Camera must be selected in a browser on the Mac where it is available.
+
+Keep the iPhone nearby, stationary and locked, with both devices signed into the
+same Apple Account and Continuity Camera enabled. USB is also supported after
+trusting the Mac. See [Apple's Continuity Camera setup](https://support.apple.com/en-us/102546).
+This Mac-browser test does not require installing the phone PWA.
 
 ### Direct phone access with HTTPS
 
@@ -91,7 +103,7 @@ For iPhone Web Push, add the HTTPS app to the Home Screen and enable notificatio
 from that installed app with a user gesture. This is an [Apple platform requirement](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/).
 HTTPS tests on a laptop do not prove phone certificate trust or lock-screen delivery.
 
-In the Agent panel, press **Enable notifications**, then **Send test push**.
+In **Live**, press **Enable notifications**, then **Send test push**.
 The first click asks the browser for permission; no token is needed. If setup
 failed, **Retry push setup** fetches the key/registration again. Disable removes
 this browser subscription. “Sent” means the push service accepted the message;
@@ -118,6 +130,11 @@ Opening the page does not begin capture; press Start. An iPhone opening the web
 page directly needs trusted HTTPS for camera/mic permissions. Physical glasses
 transport remains a separate integration step.
 
+The integrated interface has a manifest, app icons, shell-only service worker,
+install guidance and Web Push controls. This is the basic PWA shell; iPhone
+installation and background banner delivery still require the device rehearsal.
+The older standalone agent page is not the primary capture interface.
+
 ## What is connected
 
 - Raw transcript revisions commit independently of Jev, then a transactional
@@ -142,12 +159,12 @@ transport remains a separate integration step.
 
 ## Checkpoint verification
 
-Current checks: **443 Python, 84 agent, 293 memory and 107 client tests passed**, plus
-**52 isolated browser checks**. This includes
+Current checks: **443 Python, 88 agent, 297 memory and 123 client tests passed**, plus
+**102 isolated browser checks**. This includes
 outbox outage/restart and rollback behavior, transcript revisions, same gallery IDs,
 fresh-camera claim/session/expiry checks, stale-source rejection, and recovery from
 invalid memory batch reuse without rerunning image inference. Claude's completed
-UI checks are recorded separately in [the UI report](MERGED_UI_VALIDATION.md).
+UI checks are recorded separately in [the current UI report](AMBIENT_MEMORY_UI_VALIDATION.md).
 
 ```sh
 make test

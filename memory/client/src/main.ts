@@ -1,7 +1,9 @@
-// KAWK continuous-memory testing page. Page load: GET /api/config, GET /api/dashboard, enumerateDevices.
-// Nothing else happens until Start (session + media + sockets) or an explicit Search submit.
+// KAWK ambient-memory page: one document with three views (Live / Memory / Debug). Page load: GET /api/config,
+// GET /api/dashboard, agent status, enumerateDevices. Nothing records until Start (session + media + sockets).
+// Navigation only changes which section is presented; the Run and its timers/sockets live in module state.
+// Opening Memory reads GET /api/memory/browse + /api/agent/memory/browse; reads never record, delete or notify.
 import { api, agentApi, type ClientConfig, type Dashboard, type Entity, type CaptureRecord, type Packet, type SearchHit, type Person, type PeopleResponse, type AgentStatus, type AgentTask } from './api.ts';
-import { NotificationLedger, NotificationStream, describeAgentConnection, isActiveTask, parseNotification, refView, taskResultText, type AgentNotification, type StreamState } from './agentFeed.ts';
+import { NotificationLedger, NotificationStream, describeAgentConnection, isActiveTask, parseNotification, refView, taskResultView, type AgentNotification, type StreamState } from './agentFeed.ts';
 import { SEARCH_MODE_OPTIONS, buildSearchBody, normalizeSearchMode, scoreLabel, searchResultNote, type SearchMode } from './searchMode.ts';
 import { realClock } from './types.ts';
 import { Run, type RunSnapshot, type LiveFaces } from './session.ts';
@@ -18,6 +20,9 @@ import { sortPeople, countPeople, deleteButtonLabel, confirmDeleteButtonLabel } 
 import { summarizeIntroduction } from './introductions.ts';
 import { RunSwitcher, singleFlight } from './runControl.ts';
 import { NOTIFICATION_TAG_PREFIX, PushController, notificationIdFromSearch, parseWorkerMessage, readPushEnvironment, type PushState } from './push.ts';
+import { VIEWS, hashForView, presentation, viewFromHash, type View } from './views.ts';
+import { BrowseController, CATEGORY_OPTIONS, KIND_LABEL, describeBrowse, describeStatus, filterFromForm, isSuperseded, itemFacts, timeLabel, type BrowseFilter, type BrowseItem, type BrowseState } from './memoryBrowse.ts';
+import { describeInstall, type WorkerState } from './install.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -41,6 +46,14 @@ const ui = {
   agentNotifications: $('agent-notifications'), agentTasks: $('agent-tasks'), agentTasksSummary: $('agent-tasks-summary'), pwaNote: $('pwa-note'),
   pushEnable: $<HTMLButtonElement>('push-enable'), pushPrepare: $<HTMLButtonElement>('push-prepare'), pushDisable: $<HTMLButtonElement>('push-disable'), pushTest: $<HTMLButtonElement>('push-test'), pushClear: $<HTMLButtonElement>('push-clear'),
   pushStatus: $('push-status'), pushGuidance: $('push-guidance'), pushDelivery: $('push-delivery'),
+  // views + live summary
+  liveBadge: $<HTMLButtonElement>('live-badge'), liveSummary: $('live-summary'),
+  // memory browser
+  browseForm: $<HTMLFormElement>('browse-form'), browseKinds: $('browse-kinds'), browseEntityKind: $<HTMLSelectElement>('browse-entity-kind'), browseEntityKindLabel: $('browse-entity-kind-label'),
+  browseQuery: $<HTMLInputElement>('browse-query'), browseFrom: $<HTMLInputElement>('browse-from'), browseTo: $<HTMLInputElement>('browse-to'), browseHistory: $<HTMLInputElement>('browse-history'),
+  browseReset: $<HTMLButtonElement>('browse-reset'), browseRefresh: $<HTMLButtonElement>('browse-refresh'), browseNote: $('browse-note'), browseList: $('browse-list'), browseMore: $<HTMLButtonElement>('browse-more'), browseRetry: $<HTMLButtonElement>('browse-retry'),
+  // install
+  installStatus: $('install-status'), installSteps: $('install-steps'), pwaInstall: $<HTMLButtonElement>('pwa-install'),
 };
 
 let config: ClientConfig = { captureIntervalMs: 5000, transcriptWords: 200 };
@@ -86,11 +99,13 @@ function renderSnapshot(s: RunSnapshot | null): void {
   ui.start.disabled = running || Boolean(s && s.phase === 'stopping');
   ui.stop.disabled = !s || s.phase === 'stopped' || s.phase === 'error' || s.phase === 'idle';
   ui.camera.disabled = running; ui.mic.disabled = running; ui.speechBackend.disabled = running;
-  renderTranscriptNote(); renderIntroduction(s); renderSpeechNote();
+  renderTranscriptNote(); renderIntroduction(s); renderSpeechNote(); renderBadge(s); renderLiveSummary();
   if (!s) {
     for (const label of STATUS_ROWS) setRow(label, label === 'Session' ? 'idle — press Start' : label === 'Agent capture' ? 'polls GET /api/agent/commands every 400 ms while running; the agent can request one extra photo without moving the 5 s ticks'
       : label === 'Agent faces' ? 'live face identities go to POST /api/agent/faces on stable changes (incl. unknown / no face) and as a ≤ 1-per-3 s heartbeat while running' : '—');
-    setText(ui.errorsSummary, 'Errors (0)');
+    setText(ui.errorsSummary, `Errors (${pageErrors.length})`); // page-level errors (push display, streams) show even without a Run
+    const idleSig = `${pageErrors.length}:0:0`;
+    if (idleSig !== errorsSig) { errorsSig = idleSig; replaceChildren(ui.errorsList, pageErrors.map((m) => el('li', null, m))); }
     return;
   }
   setRow('Session', `${s.phase}${s.sessionId ? ` · ${short(s.sessionId)}` : ''}${s.startedAt ? ` · started ${fmtTime(s.startedAt)}` : ''}${s.reason ? ` · ${s.reason}` : ''}`,
@@ -328,12 +343,14 @@ function updateEntityRow(li: Element, e: Entity): void {
   const summary = li.querySelector('summary');
   if (summary) entitySummary(summary, e);
 }
-async function loadEntity(e: Entity, body: HTMLElement): Promise<void> {
+function loadEntity(e: Entity, body: HTMLElement): Promise<void> { return loadEntityById(e.id, body); }
+async function loadEntityById(id: string, body: HTMLElement): Promise<void> {
+  const e = { id };
   try {
-    const d = await api.entity(e.id);
+    const d = await api.entity(id);
     const attrs = Object.entries(d.entity.attributes ?? {});
     const reload = el('button', { type: 'button', class: 'quiet tiny' }, 'reload history');
-    reload.addEventListener('click', () => { void loadEntity(e, body); });
+    reload.addEventListener('click', () => { void loadEntityById(id, body); });
     replaceChildren(body, [
       el('p', null, d.entity.description || '(no description)'), el('p', { class: 'muted' }, `id ${d.entity.id} · created ${fmtDateTime(d.entity.createdAt)}`),
       attrs.length ? el('ul', null, ...attrs.map(([k, a]) => el('li', null, `${k} = ${a.value} (observed ${fmtTime(a.observedAt)})`))) : el('p', { class: 'muted' }, 'no attributes'),
@@ -374,6 +391,7 @@ function renderDashboard(d: Dashboard): void {
   setText(ui.pipeline, p ? `${outcome}${memAge ? ` · ${memAge}` : ''} · running ${String(p.running ?? '?')} · queue ${p.queue ?? '?'}${oldestPending} · observing ${obs} · reducing ${p.reducing ?? 'none'} · indexing ${String(p.indexing ?? '?')} · last error: ${p.lastError ?? 'none'} · recent latencies: ${latText} · stats: ${d.stats ? Object.entries(d.stats).map(([k, v]) => `${k}=${String(v)}`).join(' ') : '—'}`
     : 'pipeline status not reported');
   ui.pipeline.className = `mono small ${failed ? 'bad' : p?.lastError ? 'warn' : ''}`;
+  renderLiveSummary();
 }
 const pollDashboard = singleFlight(async (): Promise<void> => { // never two dashboard GETs in flight (8 s timeout vs 3 s interval)
   try { renderDashboard(await api.dashboard()); setText(ui.dashNote, `dashboard refreshed ${fmtTime(Date.now())} (GET only, every 3 s)`); }
@@ -512,6 +530,7 @@ function renderAgentStatus(): void {
   const v = describeAgentConnection(agentStatus, agentStatusError, streamState, Date.now());
   setText(ui.agentStatus, `${v.text}${notifications.duplicates ? ` · duplicate deliveries ignored ${notifications.duplicates}` : ''}`);
   ui.agentStatus.className = `note mono ${v.tone}`;
+  renderLiveSummary();
 }
 const pollAgentStatus = singleFlight(async (): Promise<void> => {
   try { agentStatus = await agentApi.status(); agentStatusError = null; }
@@ -566,7 +585,7 @@ function renderNotifications(): void {
   const sig = list.map((n) => `${n.id}:${n.acked ? 1 : 0}:${n.pushAt ?? ''}:${openedIds.has(n.id) ? 1 : 0}`).join('|');
   if (sig === notificationsSig) return;
   notificationsSig = sig || 'empty';
-  replaceChildren(ui.agentNotifications, list.length ? list.map(notificationRow) : [el('li', { class: 'empty' }, 'no agent answers yet')]);
+  replaceChildren(ui.agentNotifications, list.length ? list.map(notificationRow) : [el('li', { class: 'empty' }, 'no updates yet — they appear here when KAWK has something useful to say')]);
   renderAgentStatus();
 }
 let tasksSig = '';
@@ -579,11 +598,14 @@ function taskRow(t: AgentTask): HTMLElement {
     agentApi.cancelTask(t.id).then(() => { setText(note, 'cancel requested; waiting for the task list'); void pollTasks(); })
       .catch((e) => { cancel.disabled = false; setText(note, `cancel failed: ${msg(e)}`); });
   });
-  const result = taskResultText(t.result);
-  return el('li', null,
+  const result = taskResultView(t.result);
+  const answer = result.text ? (result.text.length > 240 ? `${result.text.slice(0, 240)}…` : result.text) : null;
+  const receipts = result.raw ? el('details', { class: 'diag' }, el('summary', null, 'Result details (diagnostic: refs, confidence, review flags)'), el('pre', null, result.raw)) : null;
+  return el('li', { class: active ? 'active' : 'terminal' },
     el('div', { class: 'row' }, el('b', { class: active ? 'st-active' : 'st-terminal' }, t.status), el('span', null, typeof t.goal === 'string' && t.goal ? t.goal : '(no goal text)'), active ? cancel : null, note),
-    result ? el('div', { class: 'meta text' }, `result: ${result}`) : null,
-    el('div', { class: 'meta' }, `id ${short(t.id, 8)}${typeof t.updatedAt === 'number' ? ` · updated ${fmtTime(t.updatedAt)}` : typeof t.createdAt === 'number' ? ` · created ${fmtTime(t.createdAt)}` : ''}`));
+    answer ? el('div', { class: 'text answer' }, answer) : result.structured ? el('div', { class: 'meta' }, 'no answer text in the result') : null,
+    el('div', { class: 'meta' }, `id ${short(t.id, 8)}${typeof t.updatedAt === 'number' ? ` · updated ${fmtTime(t.updatedAt)}` : typeof t.createdAt === 'number' ? ` · created ${fmtTime(t.createdAt)}` : ''}`),
+    receipts);
 }
 const pollTasks = singleFlight(async (): Promise<void> => {
   try {
@@ -616,13 +638,17 @@ ui.agentForm.addEventListener('submit', (ev) => {
 
 // ---- PWA: manifest + network-first shell service worker (never caches API/media) + Web Push ----------------------
 let swRegistration: Promise<ServiceWorkerRegistration | null> = Promise.resolve(null);
+let workerState: WorkerState = 'serviceWorker' in navigator ? 'pending' : 'unsupported';
+let swNote = '';
 function registerServiceWorker(): void {
-  if (!('serviceWorker' in navigator)) { setText(ui.pwaNote, 'Install: service worker unsupported here.'); return; }
+  if (!('serviceWorker' in navigator)) { swNote = 'Service worker unsupported here: no install, no push.'; renderInstall(); return; }
   swRegistration = navigator.serviceWorker.register('/sw.js').then(async (reg) => {
-    setText(ui.pwaNote, `Installable (shell cached, scope ${new URL(reg.scope).pathname}); API and media are never cached; push shows here only after a test arrives; iOS background delivery is not verified.`);
+    workerState = 'registered';
+    swNote = `Shell cached (scope ${new URL(reg.scope).pathname}); API and media are never cached; push shows here only after a test arrives; iOS background delivery is not verified.`;
+    renderInstall();
     await navigator.serviceWorker.ready;
     return reg;
-  }).catch((e) => { setText(ui.pwaNote, `Service worker registration failed: ${msg(e)}`); return null; });
+  }).catch((e) => { workerState = 'failed'; swNote = `Service worker registration failed: ${msg(e)}`; renderInstall(); return null; });
   // The worker tells open pages about push arrivals and notification clicks; the page never shows system notifications itself.
   navigator.serviceWorker.addEventListener('message', (ev) => {
     const m = parseWorkerMessage(ev.data);
@@ -630,10 +656,12 @@ function registerServiceWorker(): void {
     if (m.type === 'push') {
       if (!notifications.markPush(m.id, Date.now())) { const n = parseNotification({ id: m.id, text: m.text }, Date.now()); if (n) { n.pushAt = Date.now(); notifications.add(n); } }
       notificationsSig = ''; renderNotifications();
-      if (!m.displayed) pageError(`push ${short(m.id, 8)}: the service worker could not display the system notification`);
-      // Displayed in the foreground = acknowledged. The worker judged the window visible+focused; the page re-checks before acking.
+      if (!m.displayed) { pageError(`push ${short(m.id, 8)}: the service worker could not display the system notification`); return; } // never acknowledge a failed display
+      // Seen = acknowledged, and only then: the banner was displayed, the worker judged the window visible+focused, the page
+      // re-checks that, AND the Live view (where the update row is) is the selected view. While Memory or Debug is shown the
+      // Live section is off-stage, so the row is unseen and the update stays unacknowledged until the wearer opens it or Acks.
       // The banner itself is left alone (the OS showed it; the user may still tap it) — only Ack/open close banners.
-      if (m.foreground && document.visibilityState === 'visible' && document.hasFocus()) void ackNotification(m.id, 'displayed in the foreground via push', undefined, false);
+      if (m.foreground && document.visibilityState === 'visible' && document.hasFocus() && currentView === 'live') void ackNotification(m.id, 'displayed in the foreground via push', undefined, false);
       return;
     }
     if (m.id) openNotification(m.id, 'opened from notification click');
@@ -641,6 +669,7 @@ function registerServiceWorker(): void {
 }
 /** A notification was opened (system notification click or `?notification=` URL): highlight the row and acknowledge it. */
 function openNotification(id: string, reason: string): void {
+  showView('live'); // the update lives under Live → Updates; switching views never touches the Run
   openedIds.add(id); notificationsSig = ''; renderNotifications();
   void ackNotification(id, reason);
   ui.agentNotifications.scrollIntoView?.({ block: 'nearest' });
@@ -687,11 +716,205 @@ document.addEventListener('visibilitychange', () => {
   if (push.snapshot.subscribed) void push.refreshDelivery();
 });
 
+// ---- views: Live / Memory / Debug in one document. Only presentation changes; the Run is never touched. ------------
+const viewSections: Record<View, HTMLElement> = { live: $('view-live'), memory: $('view-memory'), debug: $('view-debug') };
+const navButtons: Record<View, HTMLButtonElement> = { live: $('nav-live'), memory: $('nav-memory'), debug: $('nav-debug') };
+let memoryOpened = false;
+let currentView: View = 'live'; // the only view in which an update row can be considered seen
+function showView(v: View, opts: { writeHash?: boolean } = {}): void {
+  currentView = v;
+  for (const section of VIEWS) {
+    const node = viewSections[section];
+    const p = presentation(v, section);
+    node.hidden = p === 'hidden';
+    node.classList.toggle('offstage', p === 'offstage'); // Live stays painted: the preview keeps decoding for photos/faces
+    if (p === 'shown') { node.removeAttribute('inert'); node.removeAttribute('aria-hidden'); } else { node.setAttribute('inert', ''); node.setAttribute('aria-hidden', 'true'); }
+    navButtons[section].setAttribute('aria-selected', String(section === v));
+    navButtons[section].tabIndex = section === v ? 0 : -1;
+  }
+  if (opts.writeHash !== false && location.hash !== hashForView(v)) history.replaceState(null, '', `${location.pathname}${location.search}${hashForView(v)}`);
+  if (v === 'memory' && !memoryOpened) { memoryOpened = true; void applyBrowse(); } // first open reads memory (GET only)
+  if (v === 'live') drawOverlay();
+}
+for (const v of VIEWS) navButtons[v].addEventListener('click', () => showView(v));
+window.addEventListener('hashchange', () => showView(viewFromHash(location.hash), { writeHash: false }));
+ui.liveBadge.addEventListener('click', () => showView('live'));
+
+function renderBadge(s: RunSnapshot | null): void {
+  const running = Boolean(s && (s.phase === 'starting' || s.phase === 'running'));
+  const text = !s || s.phase === 'idle' ? 'not recording' : s.phase === 'running' ? `recording since ${fmtTime(s.startedAt)}` : s.phase === 'error' ? `error — see Debug` : s.phase;
+  setText(ui.liveBadge, text);
+  const cls = `badge${running ? ' rec' : s?.phase === 'error' ? ' bad' : ''}`;
+  if (ui.liveBadge.className !== cls) ui.liveBadge.className = cls;
+}
+
+// ---- Now block (Live): the few numbers a wearer needs, refreshed from the Run, the dashboard and the agent feed -------
+const SUMMARY_ROWS = ['Recording', 'Camera', 'Microphone', 'Speech', 'Photos', 'Memory', 'Agent', 'Last update'] as const;
+const summaryValues = new Map<string, HTMLElement>();
+for (const label of SUMMARY_ROWS) { const v = el('div', { class: 'v' }, '—'); summaryValues.set(label, v); ui.liveSummary.append(el('div', { class: 'k' }, label), v); }
+const setSummary = (label: typeof SUMMARY_ROWS[number], value: string, tone: '' | 'ok' | 'warn' | 'bad' = '') => {
+  const node = summaryValues.get(label)!; setText(node, value);
+  const cls = `v ${tone}`; if (node.className !== cls) node.className = cls;
+};
+function renderLiveSummary(): void {
+  const s = lastSnapshot; const now = Date.now();
+  const running = Boolean(s && (s.phase === 'starting' || s.phase === 'running'));
+  if (!s || s.phase === 'idle') setSummary('Recording', 'off — press Start; nothing is captured until then');
+  else setSummary('Recording', `${s.phase}${s.startedAt ? ` since ${fmtTime(s.startedAt)}` : ''}${s.reason ? ` · ${s.reason}` : ''}`, s.phase === 'running' ? 'ok' : s.phase === 'error' ? 'bad' : 'warn');
+  const faces = liveFaces && running && now - liveFaces.receivedAt <= 5000 ? ` · ${liveFaces.evidence.faces.length} face(s): ${liveFaces.evidence.faces.map(displayName).join(', ') || 'none'} (${fmtAgo(liveFaces.receivedAt, now)})` : '';
+  setSummary('Camera', s && running ? `${s.camera}${s.videoSize ? ` ${s.videoSize.width}×${s.videoSize.height}` : ''}${faces}` : 'off', s && running ? (s.camera === 'live' ? 'ok' : s.camera === 'error' ? 'bad' : 'warn') : '');
+  setSummary('Microphone', s && running ? `${s.microphone}${s.microphone === 'live' ? ` · level ${s.micLevel.toFixed(2)}` : ''}` : 'off', s && running ? (s.microphone === 'live' ? 'ok' : s.microphone === 'error' ? 'bad' : 'warn') : '');
+  const chosen = running && s?.speechBackend ? s.speechBackend : selectedSpeechBackend();
+  setSummary('Speech', s && running ? describeSpeechBackend(chosen, s.speech) : `${SPEECH_BACKEND_OPTIONS.find((o) => o.value === chosen)?.label ?? chosen} · applies at Start`, s && running ? (s.speech.phase === 'ready' ? 'ok' : s.speech.phase === 'error' ? 'bad' : 'warn') : '');
+  if (s && s.phase !== 'idle') {
+    const bl = s.backlog; const photoAge = bl.oldestPhotoCapturedAt !== null ? now - bl.oldestPhotoCapturedAt : null;
+    setSummary('Photos', `${s.photos.drawn} taken${s.photos.interrupts ? ` (${s.photos.interrupts} for the agent)` : ''} · ${s.submissions.pending + s.submissions.submitting} uploading · ${s.submissions.accepted} accepted · ${s.submissions.failed} failed${photoAge !== null ? ` · oldest waiting ${fmtMs(photoAge)}` : ''}`, s.submissions.failed ? 'bad' : photoAge !== null && photoAge > 15_000 ? 'warn' : '');
+  } else setSummary('Photos', 'one photo every 5 s while recording; the agent may request one extra');
+  const p = dashboard?.pipeline;
+  if (!dashboard) setSummary('Memory', 'memory service not reached yet', 'warn');
+  else if (!p) setSummary('Memory', 'pipeline status not reported');
+  else {
+    const memAge = typeof p.latestMemoryAgeMs === 'number' ? `newest memory ${fmtMs(p.latestMemoryAgeMs)} old` : 'no derived memory yet';
+    const failed = typeof p.failed === 'number' ? p.failed : 0;
+    setSummary('Memory', `${memAge} · ${p.queue ?? 0} waiting${typeof p.oldestPendingMs === 'number' && p.oldestPendingMs > 0 ? ` (oldest ${fmtMs(p.oldestPendingMs)})` : ''} · ${p.committed ?? '?'} committed${failed ? ` · ${failed} failed (retained; retry needed)` : ''}${p.lastError ? ` · last error: ${p.lastError}` : ''}`, failed || p.lastError ? 'warn' : '');
+  }
+  const a = describeAgentConnection(agentStatus, agentStatusError, streamState, now);
+  setSummary('Agent', a.text, a.tone === 'ok' ? 'ok' : a.tone === 'bad' ? 'bad' : a.tone === 'warn' ? 'warn' : '');
+  const latest = notifications.list()[0];
+  setSummary('Last update', latest ? `${fmtAgo(latest.createdAt ?? latest.receivedAt, now)} · ${latest.text.slice(0, 90)}${latest.text.length > 90 ? '…' : ''}` : 'none yet');
+}
+
+// ---- Memory view: browse everything that was kept (GET only; stale replies dropped; per-category paging) -------------
+for (const o of CATEGORY_OPTIONS) {
+  const input = el('input', { type: 'radio', name: 'browse-kind', value: o.value });
+  if (o.value === 'all') input.checked = true;
+  ui.browseKinds.append(el('label', { title: o.hint }, input, o.label, el('span', { class: 'count' })));
+}
+const selectedCategory = (): string => ui.browseKinds.querySelector<HTMLInputElement>('input:checked')?.value ?? 'all';
+function currentFilter(): BrowseFilter {
+  return filterFromForm({ category: selectedCategory(), query: ui.browseQuery.value, from: ui.browseFrom.value, to: ui.browseTo.value, history: ui.browseHistory.checked, entityKind: ui.browseEntityKind.value });
+}
+const browse = new BrowseController({ fetchPage: (url) => api.browse(url), onState: renderBrowse });
+function applyBrowse(): Promise<void> { ui.browseEntityKindLabel.hidden = selectedCategory() !== 'entities'; return browse.load(currentFilter()); }
+ui.browseKinds.addEventListener('change', () => { void applyBrowse(); });
+ui.browseEntityKind.addEventListener('change', () => { void applyBrowse(); });
+ui.browseHistory.addEventListener('change', () => { void applyBrowse(); });
+ui.browseForm.addEventListener('submit', (ev) => { ev.preventDefault(); void applyBrowse(); });
+ui.browseReset.addEventListener('click', () => {
+  ui.browseQuery.value = ''; ui.browseFrom.value = ''; ui.browseTo.value = ''; ui.browseHistory.checked = false; ui.browseEntityKind.value = '';
+  const all = ui.browseKinds.querySelector<HTMLInputElement>('input[value="all"]'); if (all) all.checked = true;
+  void applyBrowse();
+});
+ui.browseRefresh.addEventListener('click', () => { void applyBrowse(); });
+ui.browseMore.addEventListener('click', () => { void browse.loadMore(); });
+ui.browseRetry.addEventListener('click', () => { void browse.retry(); });
+const browseNodes = new Map<string, Element>();
+let browseGen = -1; let browseSig = '';
+function renderBrowse(s: BrowseState): void {
+  setText(ui.browseNote, describeBrowse(s, Date.now()));
+  ui.browseNote.className = `note mono${s.errors.length ? ' bad' : ''}`;
+  ui.browseMore.hidden = !s.hasMore; ui.browseMore.disabled = s.loading; setText(ui.browseMore, s.loading ? 'Loading…' : 'Load more');
+  ui.browseRetry.hidden = !s.errors.length || s.loading;
+  for (const label of ui.browseKinds.querySelectorAll('label')) {
+    const input = label.querySelector('input'); const count = label.querySelector('.count');
+    if (!input || !count) continue;
+    const k = s.kinds.find((x) => x.kind === input.value);
+    setText(count, k ? (k.error ? '✗' : k.total !== null ? String(k.total) : k.items.length ? `${k.items.length}+` : '') : '');
+  }
+  if (s.generation !== browseGen) { browseGen = s.generation; browseNodes.clear(); clear(ui.browseList); browseSig = ''; } // new filter: old cards (and their loaded evidence) go
+  const sig = s.items.map((i) => `${i.kind}:${i.id}`).join('|');
+  if (sig !== browseSig) {
+    browseSig = sig;
+    ui.browseList.querySelector('.empty')?.remove();
+    reconcileKeyed(ui.browseList, s.items, (i) => `${i.kind}:${i.id}`, browseNodes, browseCard, () => { /* items are immutable per id; open cards keep their evidence */ });
+  }
+  const empty = ui.browseList.querySelector('.empty');
+  if (!s.items.length) {
+    const text = s.loading ? 'loading…' : s.errors.length ? 'nothing could be loaded — see the error above and press Retry' : 'nothing matches this filter';
+    if (empty) setText(empty, text); else ui.browseList.append(el('li', { class: 'empty' }, text));
+  } else empty?.remove();
+}
+const TEXT_PREVIEW = 400;
+function browseCard(it: BrowseItem): HTMLElement {
+  const st = describeStatus(it);
+  const captureId = it.captureId ?? (it.kind === 'captures' ? it.id : null);
+  const head = el('div', { class: 'card-head' }, el('span', { class: `kind kind-${it.kind}` }, KIND_LABEL[it.kind]), el('span', { class: 'title' }, it.title || '(untitled)'), st.label ? el('span', { class: `status ${st.tone}` }, st.label) : null);
+  const when = el('div', { class: 'meta when' }, `${timeLabel(it.kind)} ${fmtDateTime(it.at)} (${fmtAgo(it.at, Date.now())})${captureId ? ` · photo ${short(captureId, 8)}` : ''}${it.entityId ? ` · entity ${short(it.entityId, 8)}` : ''} · id ${short(it.id, 8)}`);
+  const body = el('div', { class: 'detail' }, el('p', { class: 'muted' }, 'expand to load…'));
+  const details = el('details', null, el('summary', null, 'Evidence & details'), body);
+  details.addEventListener('toggle', () => { if (details.open) renderCardDetail(it, body); }, { once: true });
+  const long = it.text.length > TEXT_PREVIEW;
+  const li = el('li', { class: `card kind-${it.kind}${isSuperseded(it) ? ' superseded' : ''}` }, head,
+    it.text ? el('div', { class: 'text' }, long ? `${it.text.slice(0, TEXT_PREVIEW)}…` : it.text) : null,
+    long ? el('div', { class: 'meta trunc' }, `preview of ${it.text.length} characters · full text under Evidence & details`) : null, when);
+  if (it.kind === 'captures' && captureId) { const a = link(api.frameUrl(captureId), ''); a.append(el('img', { class: 'thumb', loading: 'lazy', decoding: 'async', src: api.frameUrl(captureId), alt: `photo ${captureId}` })); li.append(a); }
+  li.append(details);
+  return li;
+}
+function renderCardDetail(it: BrowseItem, body: HTMLElement): void {
+  const now = Date.now();
+  const facts = itemFacts(it);
+  const children: (Node | string)[] = [];
+  if (it.text.length > TEXT_PREVIEW) children.push(el('h4', null, `Full text (${it.text.length} characters)`), el('p', { class: 'text full' }, it.text));
+  children.push(el('h4', null, 'Details from the record'));
+  if (facts.length) {
+    const dl = el('dl');
+    for (const f of facts) dl.append(el('dt', null, f.label), el('dd', null, f.time !== undefined ? `${fmtDateTime(f.time)} (${fmtAgo(f.time, now)})` : f.list ? el('ul', null, ...f.list.map((x) => el('li', null, x))) : f.text ?? ''));
+    children.push(dl);
+  } else children.push(el('p', { class: 'muted' }, 'no further fields'));
+  const captureId = it.captureId ?? (it.kind === 'captures' ? it.id : null);
+  if (captureId) {
+    children.push(el('p', { class: 'meta' }, 'source photo: ', link(api.frameUrl(captureId), captureId)));
+    if (it.kind !== 'captures') children.push(el('img', { class: 'photo', loading: 'lazy', decoding: 'async', src: api.frameUrl(captureId), alt: `source photo ${captureId}` }));
+    const packetBody = el('div');
+    const btn = el('button', { type: 'button', class: 'quiet tiny' }, 'Load interpreted packet');
+    btn.addEventListener('click', () => { btn.disabled = true; setText(packetBody, 'loading packet…'); void loadPacketById(captureId, packetBody).finally(() => { btn.disabled = false; }); });
+    children.push(el('div', { class: 'actions' }, btn), packetBody);
+  }
+  const entityId = it.entityId ?? (it.kind === 'entities' ? it.id : null);
+  if (entityId) {
+    const entityBody = el('div');
+    const btn = el('button', { type: 'button', class: 'quiet tiny' }, 'Load entity history');
+    btn.addEventListener('click', () => { btn.disabled = true; setText(entityBody, 'loading entity…'); void loadEntityById(entityId, entityBody).finally(() => { btn.disabled = false; }); });
+    children.push(el('div', { class: 'actions' }, btn), entityBody);
+  }
+  children.push(el('details', { class: 'raw' }, el('summary', null, 'Raw data (JSON)'), el('pre', null, JSON.stringify({ id: it.id, kind: it.kind, at: it.at, status: it.status, captureId: it.captureId, entityId: it.entityId, data: it.data }, null, 2))));
+  replaceChildren(body, children);
+}
+async function loadPacketById(captureId: string, body: HTMLElement): Promise<void> {
+  try {
+    const p = await api.packet(captureId);
+    const children: (Node | string)[] = [packetBlock(p)];
+    try { const h = await api.packetHistory(captureId); const versions = Array.isArray(h) ? h : h.versions ?? []; children.push(el('p', { class: 'muted' }, `${versions.length} packet version(s): ${versions.map((v) => `v${v.version}${v.correction ? ' (correction)' : ''} @ ${fmtTime(v.createdAt)}`).join(', ')}`)); }
+    catch (e) { children.push(el('p', { class: 'muted' }, `history unavailable: ${msg(e)}`)); }
+    if (!body.isConnected) return; // the card was removed meanwhile (new filter)
+    replaceChildren(body, children);
+  } catch (e) { if (body.isConnected) replaceChildren(body, [el('p', { class: 'muted' }, /404/.test(msg(e)) ? 'no interpreted packet yet: the frame is retained but still queued or its interpretation failed/pending' : `packet unavailable: ${msg(e)}`)]); }
+}
+
+// ---- Install block (Live): honest status + steps; the Install button exists only when the browser offered a prompt ----
+let deferredInstall: (Event & { prompt(): Promise<unknown> }) | null = null;
+function renderInstall(): void {
+  const env = readPushEnvironment(window);
+  const v = describeInstall({ isIOS: env.isIOS, standalone: env.standalone, isSecureContext: env.isSecureContext, protocol: env.protocol, hostname: env.hostname, hasServiceWorker: env.hasServiceWorker, canPrompt: deferredInstall !== null, worker: workerState, userAgent: navigator.userAgent });
+  setText(ui.installStatus, v.status);
+  const cls = `note ${v.tone}`; if (ui.installStatus.className !== cls) ui.installStatus.className = cls;
+  replaceChildren(ui.installSteps, v.steps.map((step) => el('li', null, step)));
+  ui.pwaInstall.hidden = !v.showInstallButton;
+  setText(ui.pwaNote, `${v.note}${swNote ? ` ${swNote}` : ''}`);
+}
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e as Event & { prompt(): Promise<unknown> }; renderInstall(); });
+window.addEventListener('appinstalled', () => { deferredInstall = null; renderInstall(); });
+ui.pwaInstall.addEventListener('click', () => { const p = deferredInstall; if (!p) return; deferredInstall = null; renderInstall(); p.prompt().catch(() => undefined).finally(renderInstall); });
+try { window.matchMedia('(display-mode: standalone)').addEventListener('change', renderInstall); } catch { /* matchMedia unavailable */ }
+
 // ---- boot -----------------------------------------------------------------------------------------------
 function pageError(m: string): void { pageErrors.push(m); if (pageErrors.length > 20) pageErrors.shift(); renderSnapshot(lastSnapshot); }
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function boot(): Promise<void> {
+  showView(viewFromHash(location.hash), { writeHash: false });
+  renderInstall();
   renderSnapshot(null);
   try {
     const c = await api.config();
@@ -706,6 +929,7 @@ async function boot(): Promise<void> {
   setInterval(() => { void pollDashboard(); }, 3000);
   setInterval(() => { void pollAgentStatus(); void pollTasks(); }, 2500);
   setInterval(() => { void loadNotifications(); }, 15000); // safety net if the stream misses an event; ids dedupe
+  setInterval(renderLiveSummary, 2000); // ages in the Now block keep moving while idle
   registerServiceWorker();
   void push.prepare(); // caches key + registration and re-syncs an existing subscription; never prompts — only Enable does
   const opened = notificationIdFromSearch(location.search);
