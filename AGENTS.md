@@ -225,6 +225,10 @@ transactional batch validation failures fall back to individually checked update
 without repeating image inference. Historical failed interpretations retain their
 raw sources and remain failed until an actual retry succeeds; do not hide them in
 queue metrics. Source-backed agent answers can bypass the ordered writer.
+The September 20 recovery successfully retried all 91 historical failures while
+capture continued; the failed count reached zero. This is a completed recovery
+check, not a guarantee that future provider attempts cannot fail. See the live
+report for its snapshot and the remaining capture backlog.
 Baseten is unavailable for this demo. iPhone device selection, venue audio/face
 accuracy, physical glasses/display transport and iOS background push still need
 live-device verification. The merged worker now handles push and notification

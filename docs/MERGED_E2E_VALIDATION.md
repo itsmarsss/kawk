@@ -56,7 +56,7 @@ can take much longer.
 
 ## Regression coverage and limits
 
-Current automated suites:443 Python tests,81 Bun tests,284 memory-service tests,
+At the initial integration checkpoint:443 Python tests,81 Bun tests,284 memory-service tests,
 84 client tests. Typechecks/builds pass; Python ruff/pyright pass. Claude's isolated
 browser QA passed27 checks before the final pure-state-machine race fixes. Those
 fixes have dedicated client regressions. See [the UI report](MERGED_UI_VALIDATION.md).
@@ -124,7 +124,8 @@ authentication, subscription/delete bodies, test delivery, owner-scoped counters
 retry/deduplication and expired endpoint removal. Browser/OS receipt is a separate
 check; these transport fixtures do not establish Apple background delivery.
 
-The merged UI now passes **107 client tests and 52 isolated browser checks**.
+The current suites pass **443 Python, 84 agent, 293 memory and 107 client tests**,
+plus **52 isolated browser checks**.
 Its worker handles real browser push events injected through CDP; PushManager
 registration is mocked in that browser test. The test covers synchronous
 gesture-bound subscription, tag reuse without renotification, failed-display
@@ -135,3 +136,22 @@ A separate test through the running merged server reached its existing real
 **FCM** subscription: sent deliveries increased from **1 to 2**, pending/failed
 remained zero. This is a real push-service acceptance, not a verified device
 banner. Private receipt: `.context/merged-demo/live-push-test.json` in the space.
+
+## Historical recovery — September 20, 09:20 UTC
+
+All **91 previously failed captures** were retried through the normal validated
+pipeline and committed successfully. The repair process submitted four at a time
+only when the live queue had capacity. It retained the original photos and source
+timestamps, did not delete rejected data, and did not stop ongoing capture.
+At completion the service had **2,322 committed captures, 28 pending and zero
+failed**; the agent bridge had no pending events or errors. The 28 pending records
+were normal live work still catching up after the repairs, not lost records.
+Private evidence is in the space's `.context/merged-demo/repair-results.json`
+and `repair-complete-health.json`.
+
+A live-only sample from **09:21:22 to 09:23:22 UTC** then accepted **24 new
+captures and committed 36**, reducing the queue **26 → 14** and derived-memory
+age **143 → 83 seconds**, with zero failed records and no reported pipeline
+errors. Capture stayed running. This demonstrates catch-up in that two-minute
+window, not instant scene updates or a long-run latency guarantee. The sample
+is preserved privately in `.context/merged-demo/post-repair-soak.jsonl`.

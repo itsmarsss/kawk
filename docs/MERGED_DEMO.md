@@ -97,6 +97,11 @@ failed, **Retry push setup** fetches the key/registration again. Disable removes
 this browser subscription. “Sent” means the push service accepted the message;
 confirm the actual banner with the app backgrounded, then tap it to open/focus
 the answer. Merely receiving an SSE update in a hidden tab does not acknowledge it.
+Closing/leaving the capture page stops that page's camera and microphone. The
+computer's agent and reminders continue while its services run; background push
+does not make the phone a background camera. Keep the capture page active during
+the rehearsal, or use the Mac/another device as the source while the phone receives
+notifications. Physical-device acceptance is listed in [the rehearsal](DEVICE_REHEARSAL.md).
 
 ### Read the logs
 
@@ -141,8 +146,8 @@ Current checks: **443 Python, 84 agent, 293 memory and 107 client tests passed**
 **52 isolated browser checks**. This includes
 outbox outage/restart and rollback behavior, transcript revisions, same gallery IDs,
 fresh-camera claim/session/expiry checks, stale-source rejection, and recovery from
-invalid memory batch reuse without rerunning image inference. UI checks are recorded
-separately in `MERGED_UI_VALIDATION.md` when Claude's validation completes.
+invalid memory batch reuse without rerunning image inference. Claude's completed
+UI checks are recorded separately in [the UI report](MERGED_UI_VALIDATION.md).
 
 ```sh
 make test
@@ -152,12 +157,13 @@ npm run check:client && npm run test:client && npm run build:client
 ```
 
 These are controlled tests, not evidence that iPhone capture or hardware is ready.
-At integration time the older live memory process had about six minutes of backlog.
-Source-time alignment and fresh-frame priority prevent treating an old scene as
-current; they do not eliminate slow vision/writer calls. Existing batch failures
-now retry individually. The [merged live-provider report](MERGED_E2E_VALIDATION.md)
-records12 passing controlled checks, local perception probes and measured latency;
-iPhone/hardware testing remains separate.
+All 91 historical failed captures were recovered without stopping capture. In the
+following two-minute sample, 24 new captures arrived and 36 committed, reducing
+the queue from 26 to 14 with zero failures. Scene memory still has visible model
+latency; source-time alignment and fresh-frame priority prevent treating an old
+scene as current. The [merged live-provider report](MERGED_E2E_VALIDATION.md)
+records 12 passing controlled checks, local perception probes, recovery and
+measured latency; iPhone/hardware testing remains separate.
 
 The later throughput repair replaces the writer's vector lookups with indexed
 keyword retrieval and removes per-entity full-history attribute scans. It also
