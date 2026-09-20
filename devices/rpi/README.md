@@ -21,5 +21,16 @@ The Pi announces class `pi`, gets pushed the `[devices.pi]` config from remember
 and streams JPEG frames. Cards from the hub print to stdout until a display is wired.
 Reconnects with backoff automatically; exits only if the camera itself dies.
 
+**Verified 2026-09-20** on the hackathon rig: ~14 fps sustained into the hub over
+hotspot WiFi, ~34 KB/frame, capture+encode 28 ms/frame (36 fps ceiling). Ops notes:
+- Use the Pi's **raw IP** for ssh/hub URLs — mDNS (`kawk.local`) is unreliable on
+  the hotspot.
+- The Pi's `/etc/resolv.conf` came up with NO nameserver (stale campus config);
+  we appended `1.1.1.1` / `8.8.8.8`. NetworkManager may rewrite it on reconnect —
+  only matters for apt, not for streaming (hub is dialed by IP).
+- Run/manage the client via two SEPARATE ssh calls; a combined
+  `pkill -f rpi_device && nohup ... rpi_device.py` kills its own ssh session
+  (the launch text matches the pkill pattern).
+
 Note: picamera2's "RGB888" arrays are BGR channel order — simplejpeg is called with
 `colorspace="BGR"` on purpose. If colors ever look swapped, that flag is the knob.
