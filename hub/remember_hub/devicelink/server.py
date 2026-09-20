@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,6 +56,7 @@ class DeviceSession:
     first_frame_wall: float | None = None
     frames_rx: int = 0
     audio_rx: int = 0
+    connected_at: float = field(default_factory=time.time)
     _seq_out: int = 0
     _outbox: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=1))
 
@@ -69,17 +71,23 @@ class DeviceSession:
             return time.time()
         return self.first_frame_wall + (ts_ms - self.first_device_ts) / 1000.0
 
-    # Bufferbloat detector: lag vs the FASTEST frame ever seen (running-min
-    # one-way-delay offset). Anchoring to the first frame is wrong — if the
-    # first frame was itself delayed, every later reading clamps to zero.
-    _min_offset: float | None = None
+    # Bufferbloat detector: lag vs the fastest frame in a SLIDING 2-min window.
+    # An all-time minimum baseline turns clock drift (~40 ppm between the Pi's
+    # crystal and the hub's clock) into a fake linear lag ramp; within a 2-min
+    # window drift is <5 ms while real queuing still shows instantly.
     last_lag_ms: float | None = None
+    _off_buckets: deque = field(default_factory=lambda: deque(maxlen=12))  # (10s-bucket, min)
 
     def note_frame_timing(self, ts_ms: int, t_hub: float) -> None:
         offset = t_hub - ts_ms / 1000.0
-        if self._min_offset is None or offset < self._min_offset:
-            self._min_offset = offset
-        self.last_lag_ms = max(0.0, (offset - self._min_offset) * 1000.0)
+        bucket = int(t_hub // 10)
+        if self._off_buckets and self._off_buckets[-1][0] == bucket:
+            if offset < self._off_buckets[-1][1]:
+                self._off_buckets[-1] = (bucket, offset)
+        else:
+            self._off_buckets.append((bucket, offset))
+        baseline = min(m for _, m in self._off_buckets)
+        self.last_lag_ms = max(0.0, (offset - baseline) * 1000.0)
 
     def frame_lag_ms(self) -> float | None:
         return self.last_lag_ms
