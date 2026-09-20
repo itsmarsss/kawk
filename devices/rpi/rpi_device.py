@@ -85,17 +85,19 @@ class Camera:
             self._run_software(picam2, width, height, fps, quality)
 
     def _run_hardware(self, picam2, width: int, height: int, fps: int) -> bool:
+        import io
+
         offer = self._offer
 
-        class SlotIO:
-            """File-like fed by FileOutput: each write() is one complete JPEG."""
+        class SlotIO(io.BufferedIOBase):
+            """FileOutput requires a real BufferedIOBase; each write() is one JPEG."""
+
+            def writable(self) -> bool:
+                return True
 
             def write(self, buf) -> int:
                 offer(bytes(buf))
                 return len(buf)
-
-            def flush(self) -> None:
-                pass
 
         try:
             from picamera2.encoders import MJPEGEncoder
