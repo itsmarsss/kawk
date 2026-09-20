@@ -1,0 +1,152 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "object_blip_and_outage",
+      "title": "A brief missed object frame followed by a stream outage",
+      "runner": "objects",
+      "expectation": "One missed frame and an unavailable stream must not manufacture an object disappearance or placement; the returning object remains one encounter.",
+      "events": [
+        {"at_ms": 0, "type": "objects", "labels": ["keys"]},
+        {"at_ms": 200, "type": "objects", "labels": ["keys"]},
+        {"at_ms": 400, "type": "objects", "labels": []},
+        {"at_ms": 600, "type": "objects", "labels": ["keys"]},
+        {"at_ms": 800, "type": "stream", "available": false},
+        {"at_ms": 5500, "type": "tick"},
+        {"at_ms": 5600, "type": "stream", "available": true},
+        {"at_ms": 5600, "type": "objects", "labels": ["keys"]}
+      ],
+      "checks": [
+        {"name": "No fabricated disappearance candidate", "field": "disappearance_candidates", "op": "eq", "value": 0},
+        {"name": "No false encounter ending", "field": "ended_encounters", "op": "eq", "value": 0},
+        {"name": "One continuous encounter", "field": "encounter_count", "op": "eq", "value": 1},
+        {"name": "Object is present after recovery", "field": "active_objects", "op": "eq", "value": ["object:keys"]}
+      ]
+    },
+    {
+      "id": "multiple_people_ambiguous_speech",
+      "title": "Two visible people and mixed speech with no known speaker",
+      "runner": "speech",
+      "expectation": "Even with an injected useful-memory decision, mixed speech must not be assigned to an arbitrary visible person.",
+      "events": [
+        {"at_ms": 0, "type": "face", "people": ["bob", "alice"]},
+        {"at_ms": 100, "type": "transcript", "segment_id": "mixed", "text": "I live in Toronto. No, I live in Waterloo.", "is_final": true}
+      ],
+      "checks": [
+        {"name": "No unsupported person memory", "field": "note_count", "op": "eq", "value": 0},
+        {"name": "No fabricated speaker identity", "field": "speaker_claims", "op": "eq", "value": []}
+      ]
+    },
+    {
+      "id": "face_unknown_blip",
+      "title": "One weak face observation during a head turn",
+      "runner": "face",
+      "expectation": "A confirmed identity survives one weak observation and recovers without a new encounter.",
+      "events": [
+        {"at_ms": 0, "person": "bob", "similarity": 0.8},
+        {"at_ms": 200, "person": "bob", "similarity": 0.8},
+        {"at_ms": 400, "person": "bob", "similarity": 0.39},
+        {"at_ms": 600, "person": "bob", "similarity": 0.8}
+      ],
+      "checks": [
+        {"name": "Name coasts across a weak frame", "field": "stable_ids", "op": "eq", "value": [null, "bob", "bob", "bob"]}
+      ]
+    },
+    {
+      "id": "face_identity_replacement",
+      "title": "Another person occupies the same face box",
+      "runner": "face",
+      "expectation": "Conflicting positive identity evidence clears the previous name before confirming the replacement.",
+      "events": [
+        {"at_ms": 0, "person": "bob", "similarity": 0.8},
+        {"at_ms": 200, "person": "bob", "similarity": 0.8},
+        {"at_ms": 400, "person": "alice", "similarity": 0.8},
+        {"at_ms": 600, "person": "alice", "similarity": 0.8}
+      ],
+      "checks": [
+        {"name": "No inherited name on replacement", "field": "stable_ids", "op": "eq", "value": [null, "bob", null, "alice"]}
+      ]
+    },
+    {
+      "id": "face_sustained_unknown",
+      "title": "Several weak observations expire identity",
+      "runner": "face",
+      "expectation": "Coasting is bounded; three weak observations do not retain a name indefinitely.",
+      "events": [
+        {"at_ms": 0, "person": "bob", "similarity": 0.8},
+        {"at_ms": 200, "person": "bob", "similarity": 0.8},
+        {"at_ms": 400, "person": "bob", "similarity": 0.39},
+        {"at_ms": 600, "person": "bob", "similarity": 0.39},
+        {"at_ms": 800, "person": "bob", "similarity": 0.39}
+      ],
+      "checks": [
+        {"name": "Identity expires after sustained uncertainty", "field": "stable_ids", "op": "eq", "value": [null, "bob", "bob", "bob", null]}
+      ]
+    },
+    {
+      "id": "partial_corrected_final",
+      "title": "A partial preference is negated in the final transcript",
+      "runner": "speech",
+      "expectation": "Partials never persist, the corrected final is saved verbatim once, and duplicate delivery creates no extra note.",
+      "events": [
+        {"at_ms": 0, "type": "face", "person": "bob"},
+        {"at_ms": 100, "type": "transcript", "segment_id": "preference", "text": "I like", "is_final": false},
+        {"at_ms": 200, "type": "transcript", "segment_id": "preference", "text": "I like coffee.", "is_final": false},
+        {"at_ms": 300, "type": "transcript", "segment_id": "preference", "text": "I don't like coffee.", "is_final": true},
+        {"at_ms": 400, "type": "transcript", "segment_id": "preference", "text": "I don't like coffee.", "is_final": true}
+      ],
+      "checks": [
+        {"name": "No writes from partials", "field": "partial_writes", "op": "eq", "value": 0},
+        {"name": "Final negation retained exactly once", "field": "note_texts", "op": "eq", "value": ["I don't like coffee."]},
+        {"name": "Visible person is not asserted to be speaker", "field": "speaker_claims", "op": "eq", "value": ["unknown"]}
+      ]
+    },
+    {
+      "id": "delayed_final_partner_switch",
+      "title": "A delayed final arrives after the conversation partner changes",
+      "runner": "speech",
+      "expectation": "Speech captured with Bob must not become Alice's memory when the transcript arrives later; abstaining is acceptable.",
+      "known_gap": "The current app binds at final receipt and ignores the utterance's historical face context.",
+      "events": [
+        {"at_ms": 0, "type": "face", "person": "bob", "track": 1},
+        {"at_ms": 100, "type": "transcript", "segment_id": "trip", "text": "I'm going", "is_final": false, "source_start_ms": 100},
+        {"at_ms": 1800, "type": "face", "person": "alice", "track": 2},
+        {"at_ms": 2000, "type": "transcript", "segment_id": "trip", "text": "I'm going to the park tomorrow.", "is_final": true, "source_start_ms": 100, "source_end_ms": 600}
+      ],
+      "checks": [
+        {"name": "No wrong-person memory after delayed final", "field": "note_profiles", "op": "not_contains", "value": ["alice"]}
+      ]
+    },
+    {
+      "id": "implied_need_agent_handoff",
+      "title": "An implied need should reach the general agent",
+      "runner": "speech",
+      "expectation": "After an injected positive trigger, 'I need to ask Bob about his trip' should initiate useful work without a fixed reminder-command prefix.",
+      "known_gap": "The current app still requires its supported command grammar and has no general-purpose agent handoff.",
+      "events": [
+        {"at_ms": 0, "type": "face", "person": "bob"},
+        {"at_ms": 100, "type": "transcript", "segment_id": "need", "text": "I need to ask Bob about his trip.", "is_final": true, "decision": {"directed": true, "intent": "reminder", "remember_conversation": false}}
+      ],
+      "checks": [
+        {"name": "Positive trigger produces an action or handoff", "field": "action_count", "op": "at_least", "value": 1}
+      ]
+    },
+    {
+      "id": "pending_finals_overload",
+      "title": "Three useful finals arrive while a decision is in flight",
+      "runner": "overload",
+      "expectation": "All accepted finalized statements must be processed; newest-frame-wins must not silently discard useful speech.",
+      "known_gap": "The bridge has one replaceable pending slot, so the middle final is reported dropped and never evaluated.",
+      "events": [
+        {"at_ms": 100, "type": "transcript", "segment_id": "fact-a", "text": "I prefer coffee.", "is_final": true},
+        {"at_ms": 200, "type": "transcript", "segment_id": "fact-b", "text": "I volunteer on Saturdays.", "is_final": true},
+        {"at_ms": 300, "type": "transcript", "segment_id": "fact-c", "text": "I'm moving to Montreal next month.", "is_final": true}
+      ],
+      "release_at_ms": 500,
+      "checks": [
+        {"name": "Every accepted final reaches its decision", "field": "resolved_segments", "op": "eq", "value": ["fact-a", "fact-b", "fact-c"]},
+        {"name": "All useful fixture facts are preserved", "field": "note_count", "op": "eq", "value": 3}
+      ]
+    }
+  ]
+}

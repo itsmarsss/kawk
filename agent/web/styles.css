@@ -1,0 +1,302 @@
+/* KAWK testing page: plain, single column, system text. */
+[hidden] {
+  display: none !important;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0 auto;
+  padding: 12px 16px 32px;
+  max-width: 720px;
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #8884;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 12px 0 6px;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 12px 0 6px;
+}
+
+h4 {
+  font-size: 0.9rem;
+  margin: 10px 0 4px;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid #8884;
+  margin: 14px 0;
+}
+
+small,
+.muted {
+  color: GrayText;
+  font-weight: normal;
+}
+
+.error {
+  color: #c62828;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+label {
+  display: block;
+  margin-bottom: 4px;
+}
+
+textarea,
+input {
+  width: 100%;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid #8888;
+  border-radius: 3px;
+  resize: vertical;
+}
+
+button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid #8888;
+  border-radius: 3px;
+  background: Canvas;
+  color: CanvasText;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #8882;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* Status words: plain colored text, no chips. */
+.pill {
+  font-size: 0.85rem;
+}
+
+.pill-muted {
+  color: GrayText;
+}
+
+.pill-ok {
+  color: #2e7d32;
+}
+
+.pill-warn {
+  color: #b26a00;
+}
+
+.pill-bad {
+  color: #c62828;
+}
+
+.pill-info {
+  color: #1565c0;
+}
+
+/* Lists */
+.list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.list:empty + .muted {
+  display: block;
+}
+
+.list:not(:empty) + .muted {
+  display: none;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #8883;
+}
+
+.item-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.item-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.item-meta {
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+}
+
+.item-result {
+  margin: 4px 0 0;
+  font-size: 0.9rem;
+  color: GrayText;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.item-result.is-failure {
+  color: #c62828;
+}
+
+.item.notification {
+  border-left: 3px solid #b26a00;
+  padding-left: 8px;
+}
+
+.item.transcript {
+  flex-direction: column;
+  gap: 0;
+}
+
+.item.transcript[data-final="false"] .item-text {
+  color: GrayText;
+  font-style: italic;
+}
+
+/* Details sections */
+details {
+  margin: 8px 0;
+}
+
+summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0;
+}
+
+.kv dt {
+  color: GrayText;
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Camera preview */
+.preview {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  aspect-ratio: 4 / 3;
+  background: #000;
+  border: 1px solid #8888;
+}
+
+.preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.preview-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #aaa;
+}
+
+.preview.live .preview-placeholder {
+  display: none;
+}
+
+/* Mic level */
+.meter {
+  height: 6px;
+  max-width: 480px;
+  border: 1px solid #8888;
+  margin: 4px 0;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  background: #2e7d32;
+}
+
+/* People */
+.people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.person {
+  margin: 0;
+  width: 84px;
+  text-align: center;
+  font-size: 0.85rem;
+}
+
+.person img {
+  width: 84px;
+  height: 84px;
+  object-fit: cover;
+  border: 1px solid #8888;
+}
+
+@media (max-width: 480px) {
+  body {
+    padding: 10px 12px 24px;
+  }
+
+  .kv {
+    grid-template-columns: 1fr;
+  }
+}

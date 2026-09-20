@@ -1,14 +1,21 @@
-.PHONY: test test-ui lint fixtures fetch-local-models verify-local serve-ui serve-product-ui smoke enroll compare
+.PHONY: test test-ui test-bench bench-kawk lint fixtures fetch-local-models verify-local serve-ui serve-product-ui smoke enroll compare
 
 test:
-	uv run pytest -q
+	uv run --extra lab --extra cloud pytest -q
 
 test-ui:
 	node tools/perception_lab/static/tests/faces_guard_test.mjs
 	node tools/perception_lab/static/remember/tests/run.mjs
 
+test-bench:
+	uv run pytest -q benchmarks/kawk/tests
+
+# Unmet product targets intentionally make this benchmark fail. See benchmarks/kawk/README.md.
+bench-kawk:
+	uv run python -m benchmarks.kawk policy --output data/benchmarks/kawk-policy.json $(ARGS)
+
 lint:
-	uv run ruff check hub scripts deployments
+	uv run ruff check hub scripts deployments benchmarks
 	uv run pyright
 
 fixtures:

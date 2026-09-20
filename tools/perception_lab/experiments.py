@@ -72,9 +72,12 @@ async def local_speech_socket(ws):
             async def transcribe():
                 async with contextlib.aclosing(backend.stream(chunks())) as stream:
                     async for segment in stream:
+                        # Backend words are utterance-relative. The browser maps
+                        # stream-relative audio offsets, including VAD silence gaps.
+                        offset = backend.last_timings_ms.get("utterance_start_s", 0)
                         await ws.send_json({"type": "transcript", "segment_id": segment.seg_id,
                                             "text": segment.text, "is_final": segment.is_final,
-                                            "words": [{"word": word.w, "start_time": word.t0, "end_time": word.t1,
+                                            "words": [{"word": word.w, "start_time": offset+word.t0, "end_time": offset+word.t1,
                                                        "prob": word.probability} for word in segment.words],
                                             "hub_received_ms": (time.perf_counter() - connected) * 1000,
                                             "timings_ms": dict(backend.last_timings_ms)})

@@ -1,0 +1,15 @@
+{
+  "name": "KAWK",
+  "short_name": "KAWK",
+  "description": "KAWK memory + agent: local testing interface",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e1013",
+  "theme_color": "#0e1013",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

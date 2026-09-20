@@ -160,7 +160,7 @@ class LocalWhisperBackend:
                     if utterance:
                         utterance.extend(reframer.finish())
                         text, words, elapsed = await work(self._decode, bytes(utterance))
-                        self.last_timings_ms = {"decode": elapsed}
+                        self.last_timings_ms = {"decode": elapsed, "utterance_start_s": start_sample/SAMPLE_RATE}
                         yield TranscriptSegment(seg_id=f"local-{namespace}-{number}", text=text, words=words,
                                                 is_final=True, t_start_hub=origin+start_sample/SAMPLE_RATE,
                                                 t_percept=time.monotonic())
@@ -178,7 +178,8 @@ class LocalWhisperBackend:
                         final = frame.utterance_end or duration >= self.max_utterance_seconds
                         if final or duration >= next_partial:
                             text, words, elapsed = await work(self._decode, bytes(utterance))
-                            self.last_timings_ms = {"decode": elapsed, "buffer_seconds": duration}
+                            self.last_timings_ms = {"decode": elapsed, "buffer_seconds": duration,
+                                                    "utterance_start_s": start_sample/SAMPLE_RATE}
                             if text or final:
                                 yield TranscriptSegment(seg_id=f"local-{namespace}-{number}", text=text, words=words,
                                                         is_final=final, t_start_hub=origin+start_sample/SAMPLE_RATE,

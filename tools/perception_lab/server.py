@@ -25,6 +25,7 @@ from remember_hub.perception.face.baseten_http import FaceRequestTimeout
 from .backends import cloud_face_backend, configured_backends, jpeg_dimensions, selection
 from .experiments import local_speech_socket, objects_socket
 from .faces import MODEL, FaceEngine, FaceSession, Gallery
+from .introductions import IntroductionController
 from .product_decisions import MODEL as JEV_MODEL
 from .product_decisions import backend_from_environment
 from .product_memory import NoteMemory, memory_path_for_gallery
@@ -67,6 +68,7 @@ engine = None
 engine_error = None
 engine_lock = asyncio.Lock()
 cloud_face_lock = asyncio.Lock()
+introduction_controllers = set()
 
 
 def same_origin(headers):
@@ -155,9 +157,23 @@ async def get_gallery():
 
 @app.delete("/api/gallery/{person_id}")
 async def delete_person(person_id: str):
-    if not product_sessions.delete_person(person_id):
+    deleted = product_sessions.delete_person(person_id)
+    for controller in introduction_controllers:
+        controller.invalidate()
+    if not deleted:
         raise HTTPException(404, "No such enrollment")
     return {"deleted": True}
+
+
+@app.delete("/api/gallery")
+async def reset_gallery():
+    # Explicit reset also cancels introductions that have not yet saved a person.
+    for controller in introduction_controllers:
+        controller.invalidate()
+    people = gallery.list()
+    for person in people:
+        product_sessions.delete_person(person['id'])
+    return {"deleted": True, "count": len(people)}
 
 
 async def ensure_engine():
@@ -195,6 +211,12 @@ async def faces_socket(ws: WebSocket):
         return
     await ws.accept()
     session = FaceSession(gallery)
+    try:
+        decision_backend = backend_from_environment()
+    except ValueError:
+        decision_backend = None  # Recognition remains usable; naming reports unavailable.
+    introduction = IntroductionController(session, decision_backend, ws.send_json, product_sessions.rename_person)
+    introduction_controllers.add(introduction)
     cloud_backend = None
     try:
         name = selection(ws.query_params.get("backend"), "local")
@@ -231,6 +253,8 @@ async def faces_socket(ws: WebSocket):
                     elif control.get("type") == "cancel_enrollment":
                         session.enrolling = None
                         await ws.send_json({"type": "enrollment_cancelled"})
+                    elif control.get("type") == "introduction":
+                        await introduction.receive(control)
                     else:
                         raise ValueError("Unknown camera control")
                 except (ValueError, TypeError) as error:
@@ -277,6 +301,7 @@ async def faces_socket(ws: WebSocket):
                     await ws_error(ws, str(error))
                     continue
                 processed = session.process(result)
+                introduction.observe()
             frame_id += 1
             result["timings_ms"]["server_total"] = (time.perf_counter() - started) * 1000
             await ws.send_json({"type": "frame", "frame_id": frame_id, **processed,
@@ -289,6 +314,8 @@ async def faces_socket(ws: WebSocket):
         import traceback
         traceback.print_exc()
     finally:
+        introduction_controllers.discard(introduction)
+        await introduction.close()
         if cloud_backend is not None and hasattr(cloud_backend, "aclose"):
             with contextlib.suppress(Exception):
                 await cloud_backend.aclose()

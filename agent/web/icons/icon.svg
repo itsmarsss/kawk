@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="KAWK">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd27a"/>
+      <stop offset="1" stop-color="#f2a324"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="#0f1115"/>
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="none" stroke="#2a303b" stroke-width="8"/>
+  <!-- eye: the watching lens -->
+  <path d="M96 256c40-72 100-108 160-108s120 36 160 108c-40 72-100 108-160 108S136 328 96 256z" fill="none" stroke="url(#g)" stroke-width="26" stroke-linejoin="round"/>
+  <circle cx="256" cy="256" r="60" fill="url(#g)"/>
+  <circle cx="256" cy="256" r="26" fill="#0f1115"/>
+  <circle cx="280" cy="232" r="10" fill="#fff3d6"/>
+  <!-- sound ticks -->
+  <path d="M60 220v72M452 220v72" stroke="#6fb3ff" stroke-width="16" stroke-linecap="round" opacity=".9"/>
+</svg>

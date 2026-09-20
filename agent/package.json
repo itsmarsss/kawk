@@ -1,0 +1,46 @@
+{
+  "name": "@kawk/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.3.2"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "test": "bun test test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun run check:web && bun test test",
+    "demo": "bun scripts/demo.ts",
+    "demo:stack": "bun scripts/demo-stack.ts",
+    "test:runner": "bun test test/runner.integration.test.ts",
+    "format": "biome format --write src client test scripts package.json tsconfig.json",
+    "service": "bun scripts/service.ts",
+    "smoke": "bun scripts/smoke.ts",
+    "smoke:codex": "KAWK_MODEL_PROVIDER=codex bun scripts/smoke.ts",
+    "perf": "bun scripts/perf.ts",
+    "perf:wearer": "bun scripts/wearer-perf.ts",
+    "telemetry": "bun scripts/telemetry.ts",
+    "browser:install": "playwright install chromium",
+    "build:web": "bun build ./web/app.ts --target browser --outfile ./web/app.js",
+    "check:web": "tsc --noEmit -p web/tsconfig.json"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
+    "openai": "^7.20.0",
+    "playwright": "1.63.0",
+    "web-push": "^3.6.7",
+    "write-file-atomic": "7.0.1",
+    "ws": "^8.21.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/bun": "1.3.2",
+    "@types/web-push": "^3.6.4",
+    "@types/write-file-atomic": "4.0.3",
+    "@types/ws": "^8.18.1",
+    "typescript": "5.9.3"
+  }
+}

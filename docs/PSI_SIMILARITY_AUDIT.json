@@ -1,0 +1,9 @@
+{
+  "scope": "agent source/client/scripts/web and KAWK benchmarks vs PSI packages, code files only",
+  "method": "12 consecutive nonblank whitespace-normalized lines, at least 250 characters",
+  "targetFiles": 57,
+  "referenceFiles": 277,
+  "matchingWindows": 0,
+  "matches": [],
+  "limitation": "No matches does not establish provenance or exclude shorter or rewritten copying."
+}

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>KAWK</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon.svg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>KAWK</h1>
+      <span id="session-pill" class="pill pill-muted">Connecting…</span>
+      <button id="retry-btn" type="button" hidden>Retry</button>
+      <span id="offline-pill" class="pill pill-warn" hidden>offline</span>
+    </header>
+
+    <main>
+      <form id="manual-form">
+        <label for="manual-text">Say something to the agent</label>
+        <textarea id="manual-text" rows="2" maxlength="4000" placeholder="e.g. remind me to ask Bob about his trip in 5 minutes" required></textarea>
+        <div class="row">
+          <button id="manual-send-btn" type="submit" disabled>Send</button>
+          <span id="manual-status" role="status"></span>
+        </div>
+      </form>
+      <ul id="manual-log" class="list"></ul>
+
+      <hr />
+
+      <h2>Notifications <small id="sse-pill" class="pill pill-muted">stream idle</small></h2>
+      <ul id="notification-list" class="list" aria-live="polite"></ul>
+      <p id="notification-empty" class="muted">None pending.</p>
+      <p id="notification-error" class="error" hidden></p>
+      <div class="row">
+        <button id="push-enable-btn" type="button">Enable push</button>
+        <button id="push-disable-btn" type="button" hidden>Disable push</button>
+        <span id="push-status" class="muted">Push not registered.</span>
+      </div>
+
+      <hr />
+
+      <details id="capture-details">
+        <summary>Capture (camera / microphone)</summary>
+        <h3>Camera <small id="camera-pill" class="pill pill-muted">off</small></h3>
+        <div class="preview">
+          <video id="camera-preview" playsinline muted autoplay></video>
+          <span id="camera-placeholder" class="preview-placeholder muted">Camera is off</span>
+        </div>
+        <div class="row">
+          <button id="camera-start-btn" type="button">Start camera</button>
+          <button id="camera-stop-btn" type="button" disabled>Stop</button>
+          <span id="camera-stats" class="muted">0 frames sent</span>
+        </div>
+        <p id="camera-error" class="error" role="alert" hidden></p>
+
+        <h3>Microphone <small id="mic-pill" class="pill pill-muted">off</small></h3>
+        <div class="meter" aria-hidden="true"><div id="mic-level" class="meter-fill"></div></div>
+        <div class="row">
+          <button id="mic-start-btn" type="button">Start microphone</button>
+          <button id="mic-stop-btn" type="button" disabled>Stop</button>
+          <span id="mic-stats" class="muted">0 packets sent</span>
+        </div>
+        <p id="mic-error" class="error" role="alert" hidden></p>
+        <h4>Live transcript</h4>
+        <ul id="transcript-list" class="list" aria-live="polite"></ul>
+        <p id="transcript-empty" class="muted">Nothing transcribed yet.</p>
+      </details>
+
+      <details id="details">
+        <summary>Details (runtime, reminders, tasks, people)</summary>
+        <h3>Runtime <small id="runtime-updated" class="muted">—</small></h3>
+        <dl class="kv" id="runtime-kv">
+          <dt>Agent</dt>
+          <dd id="rt-running">—</dd>
+          <dt>Active turns</dt>
+          <dd id="rt-turns">—</dd>
+          <dt>Last error</dt>
+          <dd id="rt-error">—</dd>
+          <dt>Face perception</dt>
+          <dd id="rt-face">—</dd>
+          <dt>Scene description</dt>
+          <dd id="rt-scene">—</dd>
+          <dt>Speech service</dt>
+          <dd id="rt-speech">—</dd>
+          <dt>Clock</dt>
+          <dd id="rt-clock">not synced</dd>
+        </dl>
+        <p id="runtime-error" class="error" hidden></p>
+
+        <h3>Pending reminders <small id="reminders-count" class="pill pill-muted">0</small></h3>
+        <ul id="reminder-list" class="list"></ul>
+        <p id="reminder-empty" class="muted">None.</p>
+        <p id="reminder-error" class="error" hidden></p>
+
+        <h3>Tasks <small id="tasks-count" class="pill pill-muted">0</small></h3>
+        <ul id="task-list" class="list"></ul>
+        <p id="task-empty" class="muted">None.</p>
+        <p id="task-error" class="error" hidden></p>
+
+        <h3>People <small id="people-count" class="pill pill-muted">0</small></h3>
+        <div id="people-grid" class="people"></div>
+        <p id="people-empty" class="muted">None enrolled.</p>
+        <p id="people-error" class="error" hidden></p>
+      </details>
+    </main>
+
+    <template id="notification-item">
+      <li class="item notification">
+        <div class="item-body">
+          <p class="item-text"></p>
+          <p class="item-meta muted"></p>
+        </div>
+        <button class="ack-btn" type="button">Acknowledge</button>
+      </li>
+    </template>
+
+    <template id="task-item">
+      <li class="item task">
+        <div class="item-body">
+          <p class="item-text"></p>
+          <p class="item-meta muted"></p>
+          <p class="item-result"></p>
+        </div>
+        <span class="pill status-pill"></span>
+      </li>
+    </template>
+
+    <template id="reminder-item">
+      <li class="item reminder">
+        <div class="item-body">
+          <p class="item-text"></p>
+          <p class="item-meta muted"></p>
+        </div>
+        <span class="pill status-pill"></span>
+      </li>
+    </template>
+
+    <template id="transcript-item">
+      <li class="item transcript">
+        <p class="item-text"></p>
+        <p class="item-meta muted"></p>
+      </li>
+    </template>
+
+    <template id="person-card">
+      <figure class="person">
+        <img alt="" loading="lazy" />
+        <figcaption></figcaption>
+      </figure>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

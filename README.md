@@ -3,6 +3,15 @@
 The product specification is in [AGENTS.md](AGENTS.md). GitHub's default branch
 is `main`; William's work is on `chud3`.
 
+The current demo combines the `memory/` camera and scene-memory app with the
+TypeScript/Bun agent in `agent/`. Local Python handles faces and speech; OpenAI
+handles vision, memory writing and agent turns; Jev decides when to intervene.
+The agent can search history, run code and browser tasks, schedule reminders,
+and request an extra camera frame. Baseten is disabled for this demo.
+Start with [the merged demo setup and verification](docs/MERGED_DEMO.md).
+The older V1 interface below remains available; physical glasses and OS push
+delivery have not been verified with this merged path.
+
 ## V1 product interface
 
 Open `http://127.0.0.1:8081/` for the live camera and 240×240 device-display preview.

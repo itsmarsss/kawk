@@ -1,5 +1,89 @@
 # AGENTS.md — Remember
 
+> **Merged demo direction (2026-09-20):** The user authorized integrating the current
+> `chud3` scene-memory app into `chud3-ai-agent` and pushing checkpoints to remote
+> `chud3`. Use local Python face/speech perception, with OpenAI and Jev API-backed;
+> Baseten is disabled for this demo. `memory/` owns capture, raw transcripts, scene
+> interpretation and its existing entity store. Its durable outbox feeds the Bun
+> harness. Jev routes actions and can request an extra camera frame; the existing
+> Python Jev name-binding guard still validates enrollment. History grep and literal
+> memory search are the default; the imported scene store's vector search is optional.
+> Claude Code Fable 5.1 remains the UI author. Preserve the source worktree and its
+> live data. See [integration setup and verification](docs/MERGED_DEMO.md).
+
+> **Ambient integration correction (2026-09-20):** The user now requires reminders to
+> wake LLM turns, both durable context compaction and grouping related due reminders,
+> parallel parent tasks with fresh shared context, and a Claude-authored PWA.
+> See [current pipeline](docs/PIPELINE_OVERVIEW.md). Jev includes source times and
+> transcript gaps. Capture, face-gallery tools, speech relay, PWA APIs and Web Push
+> now have implementations; read the verification report before claiming live-device
+> success. The user re-enabled Baseten on 2026-09-20 after the outage: local
+> `KAWK_BASETEN_ENABLED=1`. Face/fallback probes still return HTTP403 (face reports
+> Authentication failed), and speech cannot connect. Configured is not healthy.
+> Claude Code Fable remains required for UI. Its login works from local macOS Terminal;
+> SSH credential reads fail with Keychain status 36. No PSI code is to be copied.
+
+> **Local runner correction (2026-09-20):** The user explicitly removed Docker for
+> the hackathon. Use `LocalRunner`: direct host subprocesses in per-task `/tmp/kawk-*`
+> working directories and one shared local Playwright Chromium process with fresh
+> task browser contexts. `/tmp` is workspace separation, not OS containment. Preserve
+> tool receipts, process polling/cancellation/timeouts, task cleanup and browser state
+> separation. Do not reintroduce Docker or Kubernetes. See
+> [local runner behavior and verification](docs/LOCAL_RUNNER.md).
+
+> **Ambient memory extension (2026-09-19):** See [the current behavior and limits](docs/AMBIENT_MEMORY.md).
+> Preserve all accepted transcript revisions independently of Jev. SQLite is the
+> durable journal; completed hourly private JSONL partitions flush via
+> `write-file-atomic`. Keep deletion/correction consistent across derived claims and
+> archives. Use Temporal for timezone/DST work; do not reimplement calendar arithmetic.
+> The account owner is not verified wearer identity, and a visible person is not a
+> verified speaker. The graph uses evidence-backed versioned memories and SQLite
+> traversal. Retrieval uses `grep_history` (ripgrep over current persisted JSONL records),
+> followed by source/context reads. Do not add embeddings or a semantic retrieval service;
+> the user explicitly chose history grep on 2026-09-20. Explicit reminders have
+> durable delivery; speculative followups still go through Jev. Jev routing is the
+> activation decision; a redundant binary act question was removed after conflicting
+> live decisions. Capture/device integration and automatic wearer detection remain
+> unimplemented. Do not describe synthetic replay as live camera/glasses verification.
+
+> **AI agent workstream (2026-09-19):** Work on `chud3-ai-agent` in
+> `htn2026-chud3-ai-agent/`, branched from William's `chud3` work. The current scope
+> is implementing KAWK's memory, ambient classification, and general agent harness,
+> including subagents, code execution and browser use, without Kubernetes.
+> The user selected **TypeScript for the computer client and Bun agent runtime;
+> Python for model serving on Baseten**. TypeScript owns capture, cloud adapters,
+> evidence, memory, classification, orchestration, tools and notifications. Baseten
+> credentials live in Bun, not browser code. A local Python perception server is
+> not required by the target architecture. Preserve the existing prototype as
+> migration reference; this direction does not imply it has already been ported.
+> `martin226/psi` on `feat/multi-user-discord` is reference-only. See
+> [the implemented harness architecture](docs/AI_AGENT_HARNESS.md) and
+> [runtime setup](agent/README.md). Main agents and children now use the direct
+> **OpenAI Responses API** (`KAWK_MODEL_PROVIDER=openai`, `gpt-5.6-sol`, reasoning
+> `none`), replacing Codex subscription subprocesses as the default. The API key
+> lives only in ignored local `agent/.env` (0600). Baseten fallback and Jev
+> activation/delivery review remain. The Codex adapter is an explicit legacy option.
+> Reuse the SDK client and native tool-call IDs; do not share remote conversation
+> state across tasks. Calls use `store:false` and no automatic SDK retries.
+> Runtime telemetry defaults on in bounded local `agent/data/telemetry.jsonl`,
+> correlating tasks/turns/tools/Jev and request/first-delta/completion timestamps.
+> Missing usage is unknown, not zero. Baseten effort remains provider-default.
+> `bun run telemetry` summarizes traces. Do not sum nested or concurrent spans.
+> Capture/perception and physical-device
+> integration remain pending. Preserve the source worktree and its ongoing work. These
+> instructions supersede the older branch and fixed-handler directions below.
+
+> **KAWK direction (2026-09-19):** The user calls the product KAWK and emphasizes
+> retroactive, ambient assistance. Natural needs such as “I need to ask Bob about
+> his trip” should let Jev trigger a general-purpose agent, without requiring a
+> command phrase. Do not extend the temporary regex reminder grammar as the lasting
+> architecture. Preserve source utterance times, transcript revisions/finality,
+> visual uncertainty, and possible conversation partners separately from verified
+> speaker identity. The current browser V1 has not implemented this general agent
+> or temporal ledger. See [the pipeline direction](docs/KAWK_PIPELINE.md) and
+> [the benchmark suite](benchmarks/kawk/README.md). This correction supersedes the
+> older fixed-handler design below; it does not authorize an unrelated full rebuild.
+
 > **William's current working instructions (2026-09-19):** GitHub's default branch
 > is `main`; William works on `chud3`, overriding older main-commit instructions
 > below. For his UI work, use Claude Code Fable 5.1 (`claude-fable-5-1`); he
