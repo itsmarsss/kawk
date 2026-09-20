@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 _STREAM_FPS = 30.0  # poll rate of the newest-wins slot; must exceed device fps
 
-_PAGE = """<!doctype html>
+_PAGE = r"""<!doctype html>
 <html><head><meta charset="utf-8"><title>__NAME__ — dashboard</title>
 <style>
   :root { --bg:#0b0e14; --panel:#11141c; --line:#313244; --text:#cdd6f4; --dim:#94a3c0;
