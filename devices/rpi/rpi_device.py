@@ -31,7 +31,11 @@ def millis() -> int:
 
 class Camera:
     """Picamera2 in a thread -> newest-wins JPEG slot. Configured once from the
-    hub's config message (stop/reconfigure mid-run is not worth it tonight)."""
+    hub's config message (stop/reconfigure mid-run is not worth it tonight).
+
+    Prefers the Pi 4's HARDWARE MJPEG encoder (VideoCore, ~zero CPU — 1080p30
+    capable); falls back to software simplejpeg if the hw path fails (Pi 5 has
+    no hw encoder; software tops out ~36 fps at VGA, ~15 fps at 720p)."""
 
     def __init__(self) -> None:
         self._slot: bytes | None = None
@@ -39,9 +43,9 @@ class Camera:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def start(self, width: int, height: int, quality: int) -> None:
+    def start(self, width: int, height: int, fps: int, quality: int) -> None:
         self._thread = threading.Thread(
-            target=self._run, args=(width, height, quality), daemon=True
+            target=self._run, args=(width, height, fps, quality), daemon=True
         )
         self._thread.start()
 
@@ -53,9 +57,12 @@ class Camera:
             jpeg, self._slot = self._slot, None
             return jpeg
 
-    def _run(self, width: int, height: int, quality: int) -> None:
+    def _offer(self, jpeg: bytes) -> None:
+        with self._lock:
+            self._slot = jpeg
+
+    def _run(self, width: int, height: int, fps: int, quality: int) -> None:
         try:
-            import simplejpeg
             from picamera2 import Picamera2
         except ImportError as e:
             print(
@@ -66,20 +73,72 @@ class Camera:
             return
         try:
             picam2 = Picamera2()
-            config = picam2.create_video_configuration(
-                main={"size": (width, height), "format": "RGB888"}
-            )
-            picam2.configure(config)
-            picam2.start()
         except Exception as e:
             print(
-                f"FATAL: camera failed to start ({e}). Check the ribbon cable and "
+                f"FATAL: camera failed to open ({e}). Check the ribbon cable and "
                 "`rpicam-hello --list-cameras`.",
                 file=sys.stderr,
             )
             self._stop.set()
             return
-        print(f"[camera] imx running at {width}x{height} q{quality}")
+        if not self._run_hardware(picam2, width, height, fps):
+            self._run_software(picam2, width, height, fps, quality)
+
+    def _run_hardware(self, picam2, width: int, height: int, fps: int) -> bool:
+        offer = self._offer
+
+        class SlotIO:
+            """File-like fed by FileOutput: each write() is one complete JPEG."""
+
+            def write(self, buf) -> int:
+                offer(bytes(buf))
+                return len(buf)
+
+            def flush(self) -> None:
+                pass
+
+        try:
+            from picamera2.encoders import MJPEGEncoder
+            from picamera2.outputs import FileOutput
+
+            picam2.configure(
+                picam2.create_video_configuration(
+                    main={"size": (width, height), "format": "YUV420"},
+                    controls={"FrameRate": float(fps)},
+                )
+            )
+            # ~0.75 bits/pixel ≈ JPEG q70 look: 720p24 ≈ 17 Mbit/s, 1080p24 ≈ 37 Mbit/s.
+            bitrate = int(width * height * fps * 0.75)
+            picam2.start_recording(MJPEGEncoder(bitrate=bitrate), FileOutput(SlotIO()))
+        except Exception as e:
+            print(f"[camera] hw MJPEG unavailable ({e}); software fallback", file=sys.stderr)
+            try:
+                picam2.stop_recording()
+            except Exception:
+                pass
+            return False
+        print(f"[camera] HW MJPEG {width}x{height}@{fps} ~{bitrate / 1e6:.0f} Mbit/s")
+        while not self._stop.is_set():
+            time.sleep(0.2)
+        picam2.stop_recording()
+        return True
+
+    def _run_software(self, picam2, width: int, height: int, fps: int, quality: int) -> None:
+        try:
+            import simplejpeg
+
+            picam2.configure(
+                picam2.create_video_configuration(
+                    main={"size": (width, height), "format": "RGB888"},
+                    controls={"FrameRate": float(fps)},
+                )
+            )
+            picam2.start()
+        except Exception as e:
+            print(f"FATAL: software camera path failed ({e})", file=sys.stderr)
+            self._stop.set()
+            return
+        print(f"[camera] SW simplejpeg {width}x{height} q{quality}")
         while not self._stop.is_set():
             try:
                 # picamera2 quirk: "RGB888" arrays are BGR channel order.
@@ -91,8 +150,7 @@ class Camera:
                 print(f"[camera] capture failed: {e}", file=sys.stderr)
                 time.sleep(0.5)
                 continue
-            with self._lock:
-                self._slot = jpeg
+            self._offer(jpeg)
         picam2.stop()
 
 
@@ -130,7 +188,12 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
         except TimeoutError:
             print("[rpi] no config from hub within 2s; using defaults")
         if camera._thread is None:  # configure the camera ONCE, from hub config
-            camera.start(int(video_cfg["w"]), int(video_cfg["h"]), int(video_cfg["quality"]))
+            camera.start(
+                int(video_cfg["w"]),
+                int(video_cfg["h"]),
+                int(video_cfg["fps"]),
+                int(video_cfg["quality"]),
+            )
 
         seq = 0
         sent = 0
@@ -154,9 +217,9 @@ async def main() -> None:
     ap = argparse.ArgumentParser(description="Remember rpi camera device")
     ap.add_argument("--hub", required=True, help="ws://<hub-ip>:8765")
     ap.add_argument("--device-id", default="rpi-cam")
-    ap.add_argument("--width", type=int, default=640)
-    ap.add_argument("--height", type=int, default=480)
-    ap.add_argument("--fps", type=int, default=15)
+    ap.add_argument("--width", type=int, default=1280)
+    ap.add_argument("--height", type=int, default=720)
+    ap.add_argument("--fps", type=int, default=24)
     ap.add_argument("--quality", type=int, default=70)
     args = ap.parse_args()
 
