@@ -74,6 +74,11 @@ _PAGE = r"""<!doctype html>
   .stat:first-child { margin-top:0; }
   .stat b { color:var(--text); font-size:15px; }
   canvas { width:100%; height:48px; display:block; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .muted { color:var(--dim); font-style:italic; }
+  .dev { font-size:12px; line-height:1.8; }
+  .dev b { color:var(--acc); }
+  .kv { color:var(--dim); }
 </style></head>
 <body>
 <div class="top">
@@ -105,11 +110,19 @@ _PAGE = r"""<!doctype html>
       <button id="apply">apply</button>
       <span id="applyMsg"></span>
     </div>
-    <div class="panel" style="margin-top:14px;">
-      <h2>display now</h2><div class="card" id="card">—</div>
+    <div class="grid2" style="margin-top:14px;">
+      <div class="panel">
+        <h2>display now</h2>
+        <div class="card" id="card"><span class="muted">idle — nothing to show</span></div>
+      </div>
+      <div class="panel">
+        <h2>recent display cards</h2>
+        <pre id="actions" class="muted">none yet — cards appear when a task fires</pre>
+      </div>
     </div>
     <div class="panel" style="margin-top:14px;">
-      <h2>recent display actions</h2><pre id="actions">(none yet)</pre>
+      <h2>live transcript</h2>
+      <pre id="transcript" class="muted">no speech yet — needs a mic device and non-mock STT</pre>
     </div>
   </div>
   <div class="col">
@@ -124,7 +137,10 @@ _PAGE = r"""<!doctype html>
       <div class="stat"><span>frame size</span><b id="v_kb">—</b></div>
       <canvas id="c_kb"></canvas>
     </div>
-    <div class="panel"><h2>devices</h2><pre id="devices">(none connected)</pre></div>
+    <div class="panel"><h2>devices</h2>
+      <div id="devices" class="muted">none connected</div></div>
+    <div class="panel"><h2>gate decisions (jev)</h2>
+      <pre id="gates" class="muted">none yet — fires on speech finals and world changes</pre></div>
   </div>
 </div>
 <script>
@@ -183,6 +199,12 @@ function spark(id, data, color) {
   x.fillText(max.toFixed(max < 10 ? 1 : 0), 4, 10);           // y-axis max marker
 }
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmtUp = s => s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+
+// Sync controls to the device's ACTUAL config once — but never fight the user.
+let controlsTouched = false, controlsSynced = false;
+for (const id of ['res', 'fps', 'q'])
+  document.getElementById(id).addEventListener('input', () => { controlsTouched = true; });
 
 async function poll() {
   try {
@@ -190,7 +212,7 @@ async function poll() {
     const d = s.devices[0];
     const chip = document.getElementById('devchip');
     if (d) {
-      chip.textContent = `${d.id} · ${d.wh ? d.wh.join('×') : '?'} `;
+      chip.textContent = `${d.id} · ${d.wh ? d.wh.join('×') : '?'} · up ${fmtUp(d.connected_s)}`;
       chip.className = 'chip on';
       push('fps', d.fps); push('lag', d.lag_ms ?? 0);
       push('mbps', d.mbps); push('kb', d.kb);
@@ -204,21 +226,46 @@ async function poll() {
       spark('c_lag', hist.lag, css('--warn'));
       spark('c_mbps', hist.mbps, css('--ok'));
       spark('c_kb', hist.kb, css('--dim'));
+      if (d.cfg && !controlsSynced && !controlsTouched) {
+        controlsSynced = true;
+        const res = document.getElementById('res');
+        const want = `${d.cfg.w}x${d.cfg.h}`;
+        if ([...res.options].some(o => o.value === want)) res.value = want;
+        document.getElementById('fps').value = String(d.cfg.fps);
+        document.getElementById('q').value = d.cfg.quality;
+        document.getElementById('qv').textContent = d.cfg.quality;
+      }
     } else {
       chip.textContent = 'no device';
       chip.className = 'chip off';
     }
-    document.getElementById('devices').textContent = s.devices.map(x =>
-      `${x.id} (${x.cls})  ${x.fps.toFixed(1)} fps  lag=${x.lag_ms ?? '-'}ms  ` +
-      `${x.wh ? x.wh.join('×') : '-'}  ${x.kb}KB  ${x.mbps.toFixed(1)}Mbit/s\n` +
-      `  frames=${x.frames_rx}  audio=${x.audio_rx}`).join('\n') || '(none connected)';
+    const devEl = document.getElementById('devices');
+    if (s.devices.length) {
+      devEl.className = '';
+      devEl.innerHTML = s.devices.map(x => `<div class="dev">
+        <b>${x.id}</b> <span class="kv">(${x.cls}) · connected ${fmtUp(x.connected_s)}</span><br>
+        ${x.wh ? x.wh.join('×') : '?'} @ ${x.fps.toFixed(1)} fps · ${x.kb} KB · ${x.mbps.toFixed(1)} Mbit/s · lag ${x.lag_ms ?? '-'} ms<br>
+        <span class="kv">cfg ${x.cfg ? `${x.cfg.w}×${x.cfg.h}@${x.cfg.fps} q${x.cfg.quality}` : '?'}
+        · frames ${x.frames_rx.toLocaleString()} · audio ${x.audio_rx.toLocaleString()}</span></div>`).join('');
+    }
     const c = s.display;
     document.getElementById('dispchip').textContent = c.template;
-    document.getElementById('card').innerHTML =
-      c.template === 'idle' ? '<i>idle</i>' :
-      `<b>[${c.template}]</b> ${c.title} — ${c.body} <small>(${c.age_s.toFixed(0)}s)</small>`;
-    document.getElementById('actions').textContent =
-      s.actions.map(a => `${a.t}  [${a.template}] ${a.title} — ${a.body}`).join('\n') || '(none yet)';
+    if (c.template !== 'idle') {
+      document.getElementById('card').innerHTML =
+        `<b>[${c.template}]</b> ${c.title} — ${c.body} <small class="kv">(${c.age_s.toFixed(0)}s ago)</small>`;
+    } else {
+      document.getElementById('card').innerHTML = '<span class="muted">idle — nothing to show</span>';
+    }
+    const put = (id, rows, fmt) => {
+      if (!rows.length) return;
+      const el = document.getElementById(id);
+      el.className = '';
+      el.textContent = rows.map(fmt).join('\n');
+    };
+    put('actions', s.actions, a => `${a.t}  [${a.template}] ${a.title} — ${a.body}`);
+    put('gates', s.gates, g =>
+      `${g.t}  ${g.intent}${g.target ? ' → ' + g.target : ''}  (${g.source}, ${g.conf})`);
+    put('transcript', s.transcript, t => `${t.t}  [${t.speaker}] ${t.text}`);
     document.getElementById('backends').textContent =
       'backends ' + Object.entries(s.backends).map(([k, v]) => `${k}:${v}`).join(' ');
   } catch (e) {}
