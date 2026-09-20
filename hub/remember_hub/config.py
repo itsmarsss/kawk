@@ -25,6 +25,19 @@ class DashboardCfg(BaseModel):
     port: int = 8090
 
 
+class PwaCfg(BaseModel):
+    """PWA notification tier (§9): the primary output surface, replacing the LCD."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"  # the phone connects over LAN
+    port: int = 8092  # 8091 is taken by chud3's TS-agent PWA (docs/PWA_CONTRACT.md)
+    certfile: str = ""  # mkcert cert; iOS needs TLS for SW + push (devices/pwa/README.md)
+    keyfile: str = ""
+    vapid_sub: str = "mailto:demo@example.com"
+    min_priority: int = 10  # profile and above buzz the phone; idle never does
+    cooldown_s: float = 3.0
+
+
 class SamCfg(BaseModel):
     backend: str = "mock"
     vocabulary: list[str] = Field(default_factory=list)
@@ -75,6 +88,7 @@ class AppConfig(BaseModel):
     hub: HubCfg = HubCfg()
     devicelink: DeviceLinkCfg = DeviceLinkCfg()
     dashboard: DashboardCfg = DashboardCfg()
+    pwa: PwaCfg = PwaCfg()
     services: ServicesCfg = ServicesCfg()
     gate: GateCfg = GateCfg()
     world: WorldCfg = WorldCfg()

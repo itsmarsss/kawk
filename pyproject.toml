@@ -13,6 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 # AGENTS.md section 11: heavy deps live in extras; make demo/test run on core only.
 sim = ["opencv-python", "sounddevice", "pygame"]
+pwa = ["pywebpush>=2.0"]  # VAPID + RFC 8291 for the phone/watch notification tier
 local = [
     "ultralytics",
     "insightface",

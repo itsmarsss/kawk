@@ -29,6 +29,7 @@ from .gate import create_jev_backend
 from .gate.policy import GatePolicy
 from .memory.faces import FaceGallery
 from .memory.store import MemoryStore
+from .notify import NotifyService, PwaServer, build_notify
 from .perception.drivers import FaceDriver, SamDriver, SttDriver
 from .perception.face import create_face_backend
 from .perception.sam import create_sam_backend
@@ -77,6 +78,8 @@ class Hub:
     face_driver: FaceDriver
     stt_driver: SttDriver
     dashboard: Dashboard | None = None
+    notify: NotifyService | None = None
+    pwa: PwaServer | None = None
     port: int | None = None
 
     async def start(self, port: int | None = None) -> int:
@@ -87,6 +90,8 @@ class Hub:
         self.stt_driver.start()
         if self.dashboard is not None:
             await self.dashboard.start()
+        if self.pwa is not None:
+            await self.pwa.start()
         log.info(
             "%s hub up on ws://%s:%s (sam=%s face=%s stt=%s jev=%s)",
             PRODUCT_NAME,
@@ -105,6 +110,10 @@ class Hub:
         self.policy.stop()
         if self.dashboard is not None:
             await self.dashboard.stop()
+        if self.pwa is not None:
+            await self.pwa.stop()
+        if self.notify is not None:
+            await self.notify.drain()
         await self.link.stop()
         self.memory.close()
 
@@ -145,8 +154,13 @@ def build_hub(config: AppConfig) -> Hub:
         if config.dashboard.enabled
         else None
     )
+    notify_service, pwa_server = (
+        build_notify(bus, config.pwa, data) if config.pwa.enabled else (None, None)
+    )
     return Hub(
         dashboard=dashboard,
+        notify=notify_service,
+        pwa=pwa_server,
         config=config,
         bus=bus,
         memory=memory,

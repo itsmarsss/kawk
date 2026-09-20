@@ -12,6 +12,18 @@ enabled = true
 host = "127.0.0.1" # local ops view: camera feed + device stats + current card
 port = 8090
 
+[pwa]
+# Primary output surface: phone/watch notifications (devices/pwa). The LCD path
+# still works for devices that have one; this tier consumes the same display.current.
+enabled = true
+host = "0.0.0.0"       # phone connects over LAN
+port = 8092            # 8091 = chud3 TS-agent PWA; keep both bootable on one Mac
+certfile = ""          # mkcert cert+key enable HTTPS — required for iOS push
+keyfile = ""           #   (see devices/pwa/README.md)
+vapid_sub = "mailto:demo@example.com"
+min_priority = 10      # profile and above buzz the phone; idle never does
+cooldown_s = 3.0
+
 [services.sam]
 backend = "mock" # mock | local | baseten
 vocabulary = [

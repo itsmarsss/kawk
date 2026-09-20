@@ -1,6 +1,6 @@
 UV ?= uv
 
-.PHONY: demo test lint typecheck hub sim sim-headless fixtures fetch-local-models enroll
+.PHONY: demo test lint typecheck hub sim sim-headless fixtures fetch-local-models enroll vapid pwa-icons
 
 demo:
 	$(UV) run python -m remember_hub.scenario scenarios/keys.yaml
@@ -34,3 +34,10 @@ fetch-local-models:
 # Lane D owns enroll.py
 enroll:
 	$(UV) run --extra sim --extra local python scripts/enroll.py
+
+# PWA notification tier (devices/pwa/README.md)
+vapid:
+	$(UV) run --extra pwa python scripts/gen_vapid.py
+
+pwa-icons:
+	$(UV) run python scripts/gen_pwa_icons.py
