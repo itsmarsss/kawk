@@ -27,7 +27,9 @@ from urllib.parse import parse_qs, urlparse
 from .branding import PRODUCT_NAME
 from .bus import EventBus
 from .config import DashboardCfg
+from .contracts.decisions import GateResult
 from .contracts.display import DisplayAction
+from .contracts.percepts import TranscriptSegment
 from .devicelink.server import DeviceLinkServer
 from .display.compositor import Compositor
 
@@ -243,8 +245,12 @@ class Dashboard:
         self.backends = backends or {}
         self._server: asyncio.Server | None = None
         self._actions: deque[dict] = deque(maxlen=8)
+        self._gates: deque[dict] = deque(maxlen=8)
+        self._finals: deque[dict] = deque(maxlen=6)
         self._fps: dict[str, tuple[float, int, float]] = {}  # id -> (t, frames_rx, fps)
         bus.subscribe("display.action", self._on_action)
+        bus.subscribe("gate.result", self._on_gate)
+        bus.subscribe("percepts.stt", self._on_stt)
 
     async def _on_action(self, action: DisplayAction) -> None:
         if action.card is not None:
@@ -255,6 +261,23 @@ class Dashboard:
                     "title": action.card.title,
                     "body": action.card.body,
                 }
+            )
+
+    async def _on_gate(self, result: GateResult) -> None:
+        self._gates.appendleft(
+            {
+                "t": time.strftime("%H:%M:%S"),
+                "intent": result.intent.value,
+                "source": result.source_question,
+                "target": result.target_label or result.person_track or "",
+                "conf": round(result.confidence, 2),
+            }
+        )
+
+    async def _on_stt(self, seg: TranscriptSegment) -> None:
+        if seg.is_final:
+            self._finals.appendleft(
+                {"t": time.strftime("%H:%M:%S"), "text": seg.text, "speaker": seg.speaker}
             )
 
     async def start(self, port: int | None = None) -> int:
@@ -401,6 +424,8 @@ class Dashboard:
                     "kb": kb,
                     "mbps": round(max(fps, 0.0) * kb * 8 / 1000, 2),
                     "lag_ms": round(lag) if lag is not None else None,
+                    "cfg": session.config.get("video"),
+                    "connected_s": round(now - session.connected_at),
                 }
             )
         template, age_s = self.compositor.state()
@@ -414,5 +439,7 @@ class Dashboard:
                 "age_s": age_s,
             },
             "actions": list(self._actions),
+            "gates": list(self._gates),
+            "transcript": list(self._finals),
             "backends": self.backends,
         }
