@@ -29,8 +29,11 @@ export function mapClock(sessionId: string, samples: ClockSample[], driftPpm = 1
         s.serverSent < s.serverReceived
       )
         throw new Error("Invalid clock exchange");
-      const lo = s.serverSent - s.clientReceived;
-      const hi = s.serverReceived - s.clientSent;
+      // The server uses integer-millisecond Date.now(), while the client uses a
+      // fractional monotonic clock. Include that precision in the bounds BEFORE
+      // testing for a clock jump; a sub-ms localhost round trip can cross a tick.
+      const lo = s.serverSent - s.clientReceived - 1;
+      const hi = s.serverReceived - s.clientSent + 1;
       if (lo > hi) throw new Error("Clock changed during exchange");
       return { lo, hi, at: s.clientReceived };
     })
@@ -39,7 +42,7 @@ export function mapClock(sessionId: string, samples: ClockSample[], driftPpm = 1
   return {
     sessionId,
     offsetMs: (best.lo + best.hi) / 2,
-    uncertaintyMs: (best.hi - best.lo) / 2 + 1,
+    uncertaintyMs: (best.hi - best.lo) / 2,
     measuredAt: best.at,
     maxAgeMs: 60000,
     driftPpm,

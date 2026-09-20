@@ -2,8 +2,39 @@ import { expect, test } from "bun:test";
 import { Harness } from "../src/harness";
 import { Store } from "../src/store";
 import { serve } from "../src/server";
+import { PushDelivery } from "../src/push";
 import { KawkClient } from "../client";
 import { call, event, gate, model, until } from "./helpers";
+
+test("authenticated push setup, test delivery, status and unsubscribe use the same owner", async () => {
+  const store = new Store(":memory:");
+  const h = new Harness({ store, gate, model: model(() => call("finish", { text: "", refs: [], confidence: 1, notify: false })) });
+  const deliveries: any[] = [];
+  const push = new PushDelivery(store, { publicKey: "public-test", privateKey: "private-test" }, async (_sub, payload) => { deliveries.push(JSON.parse(payload)); });
+  const token = "p".repeat(48), server = serve(h, { token, owner: "owner", port: 0, push });
+  const request = (path: string, method = "GET", value?: unknown) => fetch(server.url + path, {
+    method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    ...(value === undefined ? {} : { body: JSON.stringify(value) }),
+  });
+  const subscription = { endpoint: "https://push.example/device", keys: { auth: "a".repeat(16), p256dh: "b".repeat(32) } };
+  try {
+    expect((await fetch(server.url + "/v1/push/test", { method: "POST" })).status).toBe(401);
+    expect(await (await request("/v1/push/key")).json()).toEqual({ publicKey: "public-test" });
+    expect((await request("/v1/push/subscriptions", "POST", subscription)).status).toBe(200);
+    const test = await request("/v1/push/test", "POST", {});
+    expect(test.status).toBe(202);
+    const notification = await test.json();
+    await push.flush(); await push.flush();
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].id).toBe(notification.id);
+    expect(deliveries[0].expiresAt).toBeGreaterThan(Date.now());
+    expect(await (await request("/v1/push/status")).json()).toEqual({ subscriptions: 1, pending: 0, sent: 1, failed: 0 });
+    expect(push.status("other").subscriptions).toBe(0);
+    await request("/v1/push/subscriptions", "DELETE", { endpoint: subscription.endpoint });
+    expect(push.status("owner").subscriptions).toBe(0);
+    expect(store.all("SELECT * FROM push_deliveries")).toHaveLength(0);
+  } finally { await server.stop(); await h.stop(); store.close(); }
+});
 test("HTTP ingestion, auth, notification delivery and acknowledgement", async () => {
   const h = new Harness({
     store: new Store(":memory:"),

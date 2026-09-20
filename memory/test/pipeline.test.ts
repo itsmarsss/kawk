@@ -51,6 +51,21 @@ test('invalid batch references retry saved packets individually without repeatin
   } finally { await s.cleanup(); }
 });
 
+test('missing batch rows recover individually instead of silently dropping captures out of the queue', async () => {
+  let observations = 0, batches = 0;
+  const s = await setup({ observe: async () => { observations++; return vision; },
+    update: async p => delta(p), updateBatch: async () => { batches++; throw Error('Memory interpretation failed: batch_row_count'); },
+  }, { autoStart: false });
+  try {
+    await s.pipeline.capture(capture('first', 5000, 1));
+    await s.pipeline.capture(capture('second', 10000, 2));
+    s.pipeline.start(); await until(() => s.store.getCapture('second')?.status === 'committed');
+    assert.equal(observations, 2); assert.equal(batches, 1);
+    assert.equal(s.pipeline.snapshot().committed, 2); assert.equal(s.pipeline.snapshot().failed, 0);
+    assert.equal(s.pipeline.snapshot().accepted, 2);
+  } finally { await s.cleanup(); }
+});
+
 test('captures remain independent of inference; out-of-order vision commits in capture order', async () => {
   let release!: () => void;
   const slow = new Promise<void>(r => { release = r; });
@@ -96,6 +111,17 @@ test('bounded queue rejects visibly and retains accepted captures', async () => 
     await s.pipeline.capture(capture('one', 5000));
     await assert.rejects(s.pipeline.capture(capture('two', 10000, 2)), /queue is full/);
     assert.equal(s.store.listCaptures().length, 1);
+  } finally { await s.cleanup(); }
+});
+
+test('concurrent uploads reserve queue capacity before asynchronous disk writes and retain interrupt headroom', async () => {
+  const s = await setup({ observe: async () => vision, update: async p => delta(p) }, { autoStart: false, maxPending: 1 });
+  try {
+    const results = await Promise.allSettled([1, 2, 3].map(i => s.pipeline.capture(capture(`normal-${i}`, i * 1000, i))));
+    assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+    const interrupts = await Promise.allSettled([4, 5, 6, 7, 8].map(i => s.pipeline.capture({ ...capture(`extra-${i}`, i * 1000, i), requestId: `request-${i}` })));
+    assert.equal(interrupts.filter(r => r.status === 'fulfilled').length, 4);
+    assert.equal(s.store.pendingCaptures().length, 5);
   } finally { await s.cleanup(); }
 });
 

@@ -235,12 +235,13 @@ export class AgentBridge {
       const path = req.path === '/api/agent/events' ? '/v1/notifications/stream'
         : req.path.startsWith('/api/agent/notifications') ? req.path.replace('/api/agent', '/v1')
         : req.path.startsWith('/api/agent/tasks') ? req.path.replace('/api/agent', '/v1')
+        : /^\/api\/agent\/push\/(key|subscriptions|status|test)$/.test(req.path) ? req.path.replace('/api/agent', '/v1')
         : /^\/v1\/artifacts\/[0-9a-f-]+$/.test(req.path) ? req.path : null;
       if (!path) { next(); return; }
       const ctl = new AbortController(); res.on('close', () => ctl.abort());
       try {
         const upstream = await this.request(path, { method: req.method, signal: ctl.signal,
-          ...(req.method === 'POST' ? { body: JSON.stringify(req.body) } : {}) });
+          ...(['POST', 'DELETE'].includes(req.method) ? { body: JSON.stringify(req.body) } : {}) });
         res.status(upstream.status);
         for (const key of ['content-type', 'content-disposition', 'cache-control']) { const v = upstream.headers.get(key); if (v) res.setHeader(key, v); }
         if (!upstream.body) { res.end(); return; }

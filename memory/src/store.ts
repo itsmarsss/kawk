@@ -154,6 +154,32 @@ export class Store {
       this.db.exec("ALTER TABLE observations ADD COLUMN kind TEXT NOT NULL DEFAULT 'fact'");
     if (!(this.db.prepare('PRAGMA table_info(observations)').all() as Row[]).some(row => row.name === 'candidate_entity_ids'))
       this.db.exec("ALTER TABLE observations ADD COLUMN candidate_entity_ids TEXT NOT NULL DEFAULT '[]'");
+    // One persisted lexical index; no embedding inference on the writer's hot path.
+    // Install and backfill together so an interrupted migration cannot lose history.
+    this.db.transaction(() => {
+      const indexed = this.db.prepare("SELECT 1 FROM metadata WHERE key='observation_fts_v1'").get();
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS observation_text USING fts5(text, content='observations', content_rowid='rowid', tokenize='unicode61');
+        CREATE TRIGGER IF NOT EXISTS observation_text_insert AFTER INSERT ON observations BEGIN
+          INSERT INTO observation_text(rowid,text) VALUES(new.rowid,new.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS observation_text_delete AFTER DELETE ON observations BEGIN
+          INSERT INTO observation_text(observation_text,rowid,text) VALUES('delete',old.rowid,old.text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS observation_text_update AFTER UPDATE OF text ON observations BEGIN
+          INSERT INTO observation_text(observation_text,rowid,text) VALUES('delete',old.rowid,old.text);
+          INSERT INTO observation_text(rowid,text) VALUES(new.rowid,new.text);
+        END;
+        CREATE INDEX IF NOT EXISTS observation_attributes ON observations(observed_at)
+          WHERE superseded=0 AND attribute IS NOT NULL AND confidence!='uncertain';
+        CREATE INDEX IF NOT EXISTS anchors_entity ON object_anchors(entity_id);
+        CREATE INDEX IF NOT EXISTS capture_status_time ON captures(status,captured_at);
+      `);
+      if (!indexed) {
+        this.db.exec("INSERT INTO observation_text(observation_text) VALUES('rebuild')");
+        this.db.prepare("INSERT INTO metadata VALUES('observation_fts_v1','1')").run();
+      }
+    })();
     this.db.prepare("UPDATE observations SET kind='event' WHERE kind='fact' AND text LIKE 'Event context: %'").run();
     if (!(this.db.prepare('PRAGMA table_info(entity_refs)').all() as Row[]).some(row => row.name === 'packet_version')) this.db.transaction(() => {
       this.db.exec(`ALTER TABLE entity_refs RENAME TO legacy_entity_refs;
@@ -501,6 +527,25 @@ export class Store {
       AND instr(lower(o.text),lower(?))>0 ORDER BY o.observed_at DESC,o.rowid DESC LIMIT ?`)
       .all(...args, query, boundedLimit(filter.limit, 20)) as Row[])
       .map(row => ({ ...this.observation(row), distance: 0 }));
+  }
+
+  /** Literal word overlap for writer context; results are candidates, never identity proof. */
+  contextNotes(texts: string[], limit = 24): SearchHit[] {
+    const terms = [...new Set(texts.flatMap(text => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+      .filter(term => term.length >= 3))];
+    if (!terms.length) return [];
+    const { sql, args } = this.filterSql({});
+    const hits = new Map<string, SearchHit>();
+    // Bound the MATCH expression while letting every source (including later rows) participate.
+    for (let offset = 0; offset < terms.length; offset += 128) {
+      const query = terms.slice(offset, offset + 128).map(term => `"${term}"`).join(' OR ');
+      const rows = this.db.prepare(`SELECT o.* FROM observation_text
+        JOIN observations o ON o.rowid=observation_text.rowid
+        WHERE observation_text MATCH ? AND ${sql}
+        ORDER BY rank,o.observed_at DESC LIMIT ?`).all(query, ...args, boundedLimit(limit, 24)) as Row[];
+      for (const row of rows) hits.set(String(row.id), { ...this.observation(row), distance: 0 });
+    }
+    return [...hits.values()].slice(0, boundedLimit(limit, 24));
   }
 
   currentObservation(id: string): Observation | null {
@@ -1094,15 +1139,25 @@ export class Store {
   }
 
   private rebuildAttributes(): void {
-    for (const entity of this.entities()) {
-      // Keep uncertain candidates searchable in history, but do not let them
-      // replace the last supported attribute (notably an object's location).
-      const rows = this.db.prepare(`SELECT o.* FROM observations o WHERE superseded=0 AND attribute IS NOT NULL AND confidence!='uncertain'
-        AND EXISTS(SELECT 1 FROM json_each(entity_ids) WHERE value=?) ORDER BY observed_at,rowid`).all(entity.id) as Row[];
-      entity.attributes = {};
-      for (const row of rows) entity.attributes[String(row.attribute)] = {
+    // Scan supported attributes once, rather than scanning all observations for
+    // every entity on every frame. Rebuild still handles historical corrections,
+    // ties and retractions, including clearing the final supported attribute.
+    const attributes = new Map<string, Entity['attributes']>();
+    const rows = this.db.prepare(`SELECT id,entity_ids,attribute,value,observed_at FROM observations
+      WHERE superseded=0 AND attribute IS NOT NULL AND confidence!='uncertain' ORDER BY observed_at,rowid`).all() as Row[];
+    for (const row of rows) for (const id of JSON.parse(String(row.entity_ids)) as string[]) {
+      const values = attributes.get(id) ?? {};
+      values[String(row.attribute)] = {
         value: String(row.value), observedAt: Number(row.observed_at), observationId: String(row.id),
       };
+      attributes.set(id, values);
+    }
+    for (const row of this.db.prepare('SELECT body FROM entities').all() as Row[]) {
+      const entity = parsed<Entity>(row)!;
+      if (this.isPersonRemoved(entity)) continue;
+      const next = attributes.get(entity.id) ?? {};
+      if (canonical(entity.attributes) === canonical(next)) continue;
+      entity.attributes = next;
       this.writeEntity(entity);
     }
   }

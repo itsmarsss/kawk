@@ -361,7 +361,7 @@ function batchPrompt(packets: Packet[], context: MemoryContext, simple = false):
     if (previous && (packet.capturedAt < previous.capturedAt || packet.sequence <= previous.sequence))
       fail('batch_packet_order');
   }
-  return boundedPrompt(BATCH_PROMPT + (simple ? SIMPLE_MEMORY_PROMPT : UPDATE_PROMPT),
+  return boundedPrompt(`Return exactly ${packets.length} updates, one for each supplied packet in the same order. Never collapse several packets into one update.\n` + BATCH_PROMPT + (simple ? SIMPLE_MEMORY_PROMPT : UPDATE_PROMPT),
     { packets: packets.map(packetEvidence), ...contextEvidence(context, simple) });
 }
 
@@ -372,6 +372,7 @@ function validateDelta(delta: MemoryDelta, packet: Packet, context: MemoryContex
   const objectRefs = new Set<string>();
   for (const match of delta.objectMatches ?? []) {
     if (refs.get(match.ref)?.kind !== 'object') fail('invalid_object_match_ref');
+    if (!refs.get(match.ref)?.existingId) fail('object_match_without_target');
     if (objectRefs.has(match.ref)) fail('duplicate_object_match');
     objectRefs.add(match.ref);
   }
@@ -423,6 +424,7 @@ function validateDelta(delta: MemoryDelta, packet: Packet, context: MemoryContex
     });
   }
   for (const fact of delta.facts) {
+    if ((fact.attribute === null) !== (fact.value === null)) fail('incomplete_attribute');
     if (fact.entityRefs.some(ref => !refs.has(ref))) fail('unknown_entity_ref');
     if (fact.transcriptKeys.some(key => !finalKeys.has(key))) fail('nonfinal_transcript_evidence');
     if (!fact.visual && !fact.transcriptKeys.length) fail('fact_without_evidence');
@@ -696,8 +698,11 @@ export function createInterpreter(options: InterpreterOptions = {}): Interpreter
         delta => validateDelta(delta, packet, context));
     },
     async updateBatch(packets, context) {
-      if (updateFormat === 'simple') return invoke('updateBatch', batchPrompt(packets, context, true), SimpleMemoryBatchSchema, undefined,
-        batch => validateBatch(batch, packets, context));
+      if (updateFormat === 'simple') {
+        const prompt = batchPrompt(packets, context, true);
+        const schema = SimpleMemoryBatchSchema.extend({ updates: SimpleMemoryBatchSchema.shape.updates.length(packets.length) });
+        return invoke('updateBatch', prompt, schema, undefined, batch => validateBatch(batch, packets, context));
+      }
       if (updateFormat === 'binding') return invoke('updateBatch', bindingUpdatePrompt(packets, context), bindingModelSchema(packets, context), undefined,
         wire => validateBatch(decodeBindingBatch(wire, packets, context), packets, context));
       if (updateFormat === 'source') return invoke('updateBatch', sourceUpdatePrompt(packets, context), SourceModelBatchSchema, undefined,

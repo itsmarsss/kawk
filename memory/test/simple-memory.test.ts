@@ -32,6 +32,26 @@ function delta(existingId: string | null, location = 'desk', assessment?: 'same_
 const response = (value: unknown) => Response.json({ status: 'completed', output: [{ type: 'message',
   role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: JSON.stringify(value) }] }] });
 
+test('simple batch schema requires one update per source and validates reused object references before commit', async () => {
+  const store = new Store(':memory:', 3, 'test-vector');
+  const packets = [fixture('first', 1000).packet, fixture('second', 2000).packet];
+  let requests = 0;
+  const batch = { updates: packets.map(packet => ({ packetId: packet.id, packetVersion: packet.version, delta: delta(null), reuse: [] })) };
+  const interpreter = createInterpreter({ provider: 'responses', model: 'fixture-model', updateFormat: 'simple',
+    env: { OPENAI_API_KEY: 'fixture-only' }, fetch: async (_url, init) => {
+      requests++; const body = JSON.parse(String(init?.body)), shape = body.text.format.schema.properties.updates;
+      assert.equal(shape.minItems, 2); assert.equal(shape.maxItems, 2);
+      return response(batch);
+    } });
+  try {
+    assert.deepEqual(await interpreter.updateBatch!(packets, store.context()), batch); assert.equal(requests, 1);
+    batch.updates[0].delta = delta(null, 'desk', 'same_instance');
+    await assert.rejects(interpreter.updateBatch!(packets, store.context()), /object_match_without_target/);
+    batch.updates[0].delta = delta(null); batch.updates[0].delta.facts[0].value = null;
+    await assert.rejects(interpreter.updateBatch!(packets, store.context()), /incomplete_attribute/);
+  } finally { store.close(); }
+});
+
 test('simple Responses observation sends the exact image and face context once and retains detailed AI notes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'kawk-simple-')); const { capture } = fixture('image', 1000);
   capture.imagePath = join(dir, 'image.jpg'); await writeFile(capture.imagePath, jpeg); let requests = 0;

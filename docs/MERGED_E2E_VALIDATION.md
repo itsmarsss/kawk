@@ -67,7 +67,7 @@ gallery deletion propagation and late-name ordering, camera claim/session/expiry
 and invalid batch reuse recovery. JPEG writes now use `write-file-atomic`; history
 scoring yields between queries and reports context/model/commit timing separately.
 
-The original sustained live scene writer still has a substantial backlog. A sample
+At the initial integration checkpoint, the sustained live scene writer had a substantial backlog. A sample
 of150 recent provider operations showed complex image interpretation p50≈25.2s,
 p95≈29.5s; writer calls p50≈12.0s, p95≈16.3s with7 failures among30 attempts.
 Those are per-attempt provider timings, not full batch latency. Eight vision workers
@@ -80,3 +80,46 @@ answers independently of a completed scene update. This does not make the derive
 current-state projection real-time. Do not claim iPhone Continuity Camera, physical
 glasses, noisy-venue perception, background iOS push or robust long-run throughput
 were verified by these checks.
+
+## Throughput repair and rerun — September 20, 08:35 UTC
+
+On a consistent private copy containing 1,740 captures, 739 entities and 37,290
+active observations, the old attribute rebuild took **3,790 ms**. Scanning
+supported attributes once, with unchanged entities left untouched, took **10 ms**.
+Writer context now defaults to FTS5 literal word overlap, with the same continuity
+and face identities. A four-frame lookup took **306 ms**, compared with the earlier
+6.76-second embedding/exact-vector path. Source text and images are retained;
+corrections and removed identities still filter retrieval. Vector search remains
+an explicit optional UI/API mode, not the writer default.
+
+Live batch commits after the change were about **200 ms**, versus approximately
+12 seconds before. The existing backlog is being drained in source order under
+ongoing capture rather than deleted or marked complete. Capture admission now
+reserves capacity before disk I/O, so concurrent uploads cannot exceed the queue
+bound. Provider inference latency remains and is separately logged.
+
+The full real-provider fixture replay passed **12/12** again. Matching answers are
+now required to belong to the task created for that specific request; a failed
+case sets a nonzero process exit status. Private run directory:
+`agent/data/merged-perf/2026-09-20T08-34-56-267Z/`.
+
+| Check | Request-to-result |
+|---|---:|
+| Keys recall across hours | 5.65 s |
+| Class review | 6.68 s |
+| William conversation recall | 6.95 s |
+| Schedule reminder | 5.40 s |
+| Code while reminder waits | 7.14 s |
+| Twenty-second reminder, separate LLM turn | 23.34 s from original request |
+| Person reminder setup | 5.36 s |
+| Confirmed-person appearance to reminder | 2.86 s |
+| Browser download, calculation and upload | 24.73 s |
+| Upload receipt/file content check | Passed, total 94.40 |
+| Cancellation API/state transition | 3 ms |
+| Fresh camera interpretation and answer | 10.92 s |
+
+HTTPS integration verifies a trusted test-certificate handshake, shared HTTP/HTTPS
+store and WSS-to-local-perception proxy. Push tests verify same-origin server-side
+authentication, subscription/delete bodies, test delivery, owner-scoped counters,
+retry/deduplication and expired endpoint removal. Browser/OS receipt is a separate
+check; these transport fixtures do not establish Apple background delivery.

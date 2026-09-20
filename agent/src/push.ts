@@ -50,14 +50,41 @@ export class PushDelivery {
     return { subscribed: true };
   }
   unsubscribe(owner: string, endpoint: string) {
-    this.store.run(
+    this.store.atomic(() => {
+      this.store.run("DELETE FROM push_deliveries WHERE subscription_id IN (SELECT id FROM push_subscriptions WHERE owner=? AND json_extract(payload,'$.endpoint')=?)", owner, endpoint);
+      this.store.run(
       "DELETE FROM push_subscriptions WHERE owner=? AND json_extract(payload,'$.endpoint')=?",
       owner,
       endpoint,
-    );
+      );
+    });
     return { subscribed: false };
   }
+  status(owner: string) {
+    const subscriptions = this.store.one<{ n: number }>("SELECT count(*) AS n FROM push_subscriptions WHERE owner=?", owner)!.n;
+    const counts = { pending: 0, sent: 0, failed: 0 };
+    for (const row of this.store.all<{ state: keyof typeof counts; n: number }>(
+      `SELECT d.state,count(*) AS n FROM push_deliveries d JOIN push_subscriptions s ON s.id=d.subscription_id
+       JOIN notifications n ON n.id=d.notification_id WHERE s.owner=?
+       AND (d.state!='pending' OR (n.state='pending' AND n.expires_at>?)) GROUP BY d.state`, owner, this.store.now()))
+      if (row.state in counts) counts[row.state] = row.n;
+    return { subscriptions, ...counts };
+  }
+  testNotification(owner: string) {
+    return this.store.atomic(() => {
+      const id = `push-test:${crypto.randomUUID()}`, now = this.store.now();
+      this.store.ingest(owner, { id, deviceId: 'notification-settings', streamId: 'push-test', revision: 0,
+        kind: 'context', final: true, sourceStart: now, sourceEnd: now,
+        text: 'The user requested a notification delivery test.', confidence: 1, speakerId: null,
+        personIds: [], provenance: 'user:push-test' }, false);
+      const refs = [{ eventId: id, revision: 0 }];
+      const task = this.store.createTask({ owner, goal: 'Test this device notification delivery', refs, capabilities: [] });
+      this.store.setTask(task.id, 'completed');
+      return this.store.notify(task, 'Test notification from KAWK.', refs, 300_000, id);
+    });
+  }
   start() {
+    if (this.timer) return;
     this.timer = setInterval(() => {
       if (!this.active)
         this.active = this.flush()
@@ -89,10 +116,14 @@ export class PushDelivery {
           this.store.now(),
         );
         if (!delivery) continue;
+        // A previous endpoint may have taken seconds to send. Revalidate immediately
+        // before sending so expiry, acknowledgement, corrections and unsubscribe win.
+        if (!this.store.notifications(sub.owner).some(current => current.id === n.id) ||
+            !this.store.one("SELECT id FROM push_subscriptions WHERE id=?", sub.id)) continue;
         try {
           await this.send(
             JSON.parse(sub.payload),
-            JSON.stringify({ id: n.id, title: "KAWK", body: n.text, url: "/" }),
+            JSON.stringify({ id: n.id, title: "KAWK", body: n.text, url: "/", expiresAt: n.expiresAt }),
             {
               TTL: Math.max(1, Math.floor((n.expiresAt - this.store.now()) / 1000)),
               timeout: 5000,
@@ -107,7 +138,7 @@ export class PushDelivery {
         } catch (e) {
           const status = (e as { statusCode?: number }).statusCode;
           if (status === 404 || status === 410) {
-            this.store.run("DELETE FROM push_subscriptions WHERE id=?", sub.id);
+            this.unsubscribe(sub.owner, JSON.parse(sub.payload).endpoint);
             break;
           }
           const attempts = delivery.attempts + 1;

@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { get as secureGet } from 'node:https';
+import WebSocket, { WebSocketServer } from 'ws';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AddressInfo } from 'node:net';
@@ -8,6 +11,46 @@ import { Store } from '../src/store.js';
 import { MemoryPipeline } from '../src/pipeline.js';
 import { createMemoryServer } from '../src/server.js';
 import { createServer } from 'node:http';
+
+test('HTTPS shares the same sources as HTTP and proxies authenticated-origin WSS perception', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kawk-tls-'));
+  const config = join(dir, 'openssl.cnf'), key = join(dir, 'key.pem'), cert = join(dir, 'cert.pem');
+  await writeFile(config, '[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=localhost\n[ext]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n');
+  execFileSync('openssl', ['req', '-x509', '-nodes', '-newkey', 'rsa:2048', '-days', '1', '-config', config, '-keyout', key, '-out', cert], { stdio: 'ignore' });
+  const tls = { key: await readFile(key), cert: await readFile(cert) };
+  const upstream = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>(r => upstream.once('listening', r));
+  upstream.on('connection', ws => { ws.send(JSON.stringify({ type: 'ready', backend: 'fixture' })); ws.on('message', bytes => ws.send(bytes)); });
+  const store = new Store(':memory:', 3, 'test');
+  store.createSession('shared-http-https', 1);
+  const pipeline = new MemoryPipeline(store, { observe: async () => { throw Error('unused'); }, update: async () => { throw Error('unused'); } },
+    { model: 'test', dimensions: 3, embed: async () => [] }, { dataDir: dir, autoStart: false });
+  const options = { perceptionUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, publicDir: dir, provider: 'test', model: 'test' };
+  const http = createMemoryServer(pipeline, options), https = createMemoryServer(pipeline, { ...options, tls });
+  let socket: WebSocket | undefined;
+  try {
+    await Promise.all([http, https].map(s => new Promise<void>(r => s.listen(0, '127.0.0.1', r))));
+    const secureBase = `https://127.0.0.1:${(https.address() as AddressInfo).port}`;
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      secureGet(secureBase + '/api/dashboard', { ca: tls.cert }, res => {
+        let body = ''; res.on('data', b => body += b); res.on('end', () => resolve({ status: res.statusCode!, body }));
+      }).on('error', reject);
+    });
+    assert.equal(response.status, 200); assert.equal(JSON.parse(response.body).stats.sessions, 1);
+    const plain = await (await fetch(`http://127.0.0.1:${(http.address() as AddressInfo).port}/api/dashboard`)).json();
+    assert.deepEqual(plain.stats, JSON.parse(response.body).stats);
+    socket = new WebSocket(secureBase.replace('https:', 'wss:') + '/ws/faces', { ca: tls.cert, origin: secureBase });
+    const ready = await new Promise<string>((resolve, reject) => { socket!.once('message', x => resolve(x.toString())); socket!.once('error', reject); });
+    assert.equal(JSON.parse(ready).backend, 'fixture');
+    const echoed = new Promise<string>((resolve, reject) => { socket!.once('message', x => resolve(x.toString())); socket!.once('error', reject); });
+    socket.send('same-origin camera transport'); assert.equal(await echoed, 'same-origin camera transport');
+  } finally {
+    socket?.terminate();
+    for (const ws of upstream.clients) ws.terminate();
+    await Promise.all([http, https].map(s => new Promise<void>(r => { s.closeAllConnections(); s.close(() => r()); })));
+    await new Promise<void>(r => upstream.close(() => r())); store.close(); await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test('people endpoints unify gallery listing/reset, reject cross-origin deletes and propagate upstream failure', async () => {
   const gallery = new Map([['gallery-maya', {id:'gallery-maya', name:'Maya'}]]);
@@ -83,7 +126,7 @@ test('HTTP accepts evidence, commits and retrieves durable source-linked semanti
     const packet = await (await fetch(base + '/api/packets/photo')).json();
     assert.equal(packet.faces.status, 'unavailable'); assert.equal(packet.audio.status, 'unavailable');
     assert.equal(packet.vision.scene, 'A classroom');
-    const found = await (await post('/api/search', { query: 'textbook', from: capturedAt-1, to: capturedAt+1 })).json();
+    const found = await (await post('/api/search', { query: 'textbook', mode: 'semantic', from: capturedAt-1, to: capturedAt+1 })).json();
     assert.ok(found.results.length); assert.ok(found.results.some((r: {text:string}) => r.text.includes('textbook')));
     assert.ok(found.results.every((r: {packetId:string}) => r.packetId === 'photo'));
     assert.deepEqual(Buffer.from(await (await fetch(base + '/api/frames/photo')).arrayBuffer()), jpeg);

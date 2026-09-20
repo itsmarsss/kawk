@@ -12,6 +12,7 @@ import { buildMemoryContext } from './memory-context.js';
 export interface PipelineOptions {
   dataDir: string; transcriptWords?: number; visionConcurrency?: number; maxPending?: number; updateBatchSize?: number;
   batchWaitMs?: number;
+  contextRetrieval?: 'keyword' | 'semantic';
   now?: () => number; autoStart?: boolean;
 }
 export class MemoryPipeline {
@@ -27,6 +28,7 @@ export class MemoryPipeline {
   private nextIndexAttemptAt = 0;
   private readySince = new Map<string, number>();
   private contextInvalidationGeneration = 0;
+  private accepting = 0;
   private now: () => number;
   readonly transcriptWords: number;
   constructor(readonly store: Store, private model: Interpreter, readonly embedder: Embedder, private options: PipelineOptions) {
@@ -61,7 +63,13 @@ export class MemoryPipeline {
   }
   snapshot() {
     const pending = this.store.pendingCaptures();
+    const counts = this.store.db.prepare('SELECT status,count(*) AS n FROM captures GROUP BY status').all() as { status: string; n: number }[];
+    const state = this.store.currentState();
     return { running: this.running, queue: pending.length,
+      failed: counts.find(row => row.status === 'failed')?.n ?? 0,
+      committed: counts.find(row => row.status === 'committed')?.n ?? 0,
+      accepted: counts.reduce((sum, row) => sum + row.n, 0),
+      latestMemoryAgeMs: state.packetId ? Math.max(0, this.now() - state.observedAt) : null,
       oldestPendingMs: pending.length ? Math.max(0, this.now() - Math.min(...pending.map(c => c.receivedAt))) : 0,
       observing: this.observing.size, reducing: [...this.reducing][0] ?? null, reducingBatch: [...this.reducing], indexing: this.indexing,
       lastError: this.lastError, latencies: this.latencies.slice(-30) };
@@ -90,29 +98,32 @@ export class MemoryPipeline {
         throw new Error('Capture ID was reused with different evidence');
       return existing;
     }
-    if (this.store.pendingCaptures().length >= (this.options.maxPending ?? 120) + (input.requestId ? 4 : 0)) {
+    if (this.store.pendingCaptures().length + this.accepting >= (this.options.maxPending ?? 120) + (input.requestId ? 4 : 0)) {
       await mkdir(this.options.dataDir, { recursive: true });
       await appendFile(join(this.options.dataDir, 'capture-gaps.jsonl'), JSON.stringify({
         sessionId: input.sessionId, sequence: input.sequence, capturedAt: input.capturedAt, reason: 'queue_full',
       }) + '\n');
       throw new Error('Memory queue is full; this capture was not accepted');
     }
-    const frameDir = join(this.options.dataDir, 'frames');
-    await mkdir(frameDir, { recursive: true });
-    const disk = await statfs(frameDir);
-    if (disk.bavail * disk.bsize < 256 * 1024 * 1024 + bytes.length)
-      throw new Error('Insufficient disk space; capture was not accepted');
-    const imagePath = join(frameDir, digest + '.jpg');
-    // Repeated identical camera frames share a hash/path. Never truncate that
-    // existing image while another vision worker is reading it.
-    await writeFileAtomic(imagePath, bytes, { mode: 0o600 });
-    const { jpegBase64: _, ...metadata } = input;
-    const capture: CaptureRecord = { ...metadata, imagePath, sha256: digest, receivedAt: this.now(),
-      status: 'queued', error: null, vision: null };
-    this.store.insertCapture(capture);
-    this.record(input.id, 'capture_to_upload', this.now() - input.capturedAt);
-    this.pump();
-    return capture;
+    this.accepting++;
+    try {
+      const frameDir = join(this.options.dataDir, 'frames');
+      await mkdir(frameDir, { recursive: true });
+      const disk = await statfs(frameDir);
+      if (disk.bavail * disk.bsize < 256 * 1024 * 1024 + bytes.length)
+        throw new Error('Insufficient disk space; capture was not accepted');
+      const imagePath = join(frameDir, digest + '.jpg');
+      // Repeated identical camera frames share a hash/path. Never truncate that
+      // existing image while another vision worker is reading it.
+      await writeFileAtomic(imagePath, bytes, { mode: 0o600 });
+      const { jpegBase64: _, ...metadata } = input;
+      const capture: CaptureRecord = { ...metadata, imagePath, sha256: digest, receivedAt: this.now(),
+        status: 'queued', error: null, vision: null };
+      this.store.insertCapture(capture);
+      this.record(input.id, 'capture_to_upload', this.now() - input.capturedAt);
+      this.pump();
+      return capture;
+    } finally { this.accepting--; }
   }
   transcript(raw: unknown) {
     const t = TranscriptSchema.parse(raw);
@@ -234,8 +245,8 @@ export class MemoryPipeline {
   }
   private async context(packets: Packet[]): Promise<MemoryContext> {
     return buildMemoryContext(this.store, this.embedder, packets, () => {
-      this.lastError = 'Semantic context unavailable; durable evidence retained and indexing will retry';
-    });
+      this.lastError = 'Memory context retrieval unavailable; durable evidence retained';
+    }, this.options.contextRetrieval ?? 'keyword');
   }
   private async reduce(captures: CaptureRecord[]) {
     const started = this.now();
@@ -271,8 +282,9 @@ export class MemoryPipeline {
     } catch (e) {
       // Invalid cross-row references never commit. Retry the preserved packets separately;
       // each still goes through full source/identity validation and normal attempt limits.
-      if (captures.length > 1 && e instanceof Error && /invalid_batch_reuse|batch_reuse_conflict|duplicate_batch_reuse/.test(e.message)) {
-        this.lastError = 'Batch references failed validation; retrying saved packets individually';
+      if (captures.length > 1 && e instanceof Error &&
+          /invalid_batch_reuse|batch_reuse_conflict|duplicate_batch_reuse|batch_row_count|batch_row_mismatch|invalid_object_match_ref|object_match_without_target|incomplete_attribute|schema_validation/.test(e.message)) {
+        this.lastError = 'Batch output failed validation; retrying saved packets individually';
         for (const c of captures) this.store.forceSingleUpdate(c.id);
       } else for (const c of captures) this.fail(c.id, e);
     }

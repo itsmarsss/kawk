@@ -1,4 +1,4 @@
-import { mkdir, appendFile } from 'node:fs/promises';
+import { mkdir, appendFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,27 +37,46 @@ const interpreter = createInterpreter({ provider, model, writerModel, updateForm
 const words = Number(process.env.MEMORY_TRANSCRIPT_WORDS ?? 200);
 if (!Number.isInteger(words) || words < 1 || words > 2000) throw new Error('MEMORY_TRANSCRIPT_WORDS must be 1–2000');
 const pipeline = new MemoryPipeline(store, interpreter, embedder, { dataDir, transcriptWords: words,
-  visionConcurrency: Number(process.env.MEMORY_VISION_CONCURRENCY ?? 4),
+  visionConcurrency: Number(process.env.MEMORY_VISION_CONCURRENCY ?? 8),
   updateBatchSize: Number(process.env.MEMORY_UPDATE_BATCH_SIZE ?? 4),
   batchWaitMs: Number(process.env.MEMORY_BATCH_WAIT_MS ?? 0) });
 const bridge = process.env.KAWK_AGENT_TOKEN_FILE ? new AgentBridge(store, {
   url: process.env.KAWK_AGENT_URL ?? 'http://127.0.0.1:8091', tokenFile: process.env.KAWK_AGENT_TOKEN_FILE,
 }) : undefined;
-const server = createMemoryServer(pipeline, {
+const serverOptions: Parameters<typeof createMemoryServer>[1] = {
   perceptionUrl: process.env.MEMORY_PERCEPTION_URL ?? 'http://127.0.0.1:8081',
   publicDir: join(packageRoot, 'public'), provider, model, writerModel, updateFormat, textReader,
   speechBackend, speechNotice: process.env.MEMORY_SPEECH_NOTICE, bridge,
-});
+};
+const server = createMemoryServer(pipeline, serverOptions);
 const port = Number(process.env.PORT ?? 8082);
 server.listen(port, process.env.HOST ?? '0.0.0.0', () => {
   console.log(`KAWK memory: http://localhost:${port} (${provider}, vision ${model}, writer ${writerModel})`);
 });
+const certFile = process.env.MEMORY_TLS_CERT, keyFile = process.env.MEMORY_TLS_KEY;
+if (Boolean(certFile) !== Boolean(keyFile)) throw new Error('Set both MEMORY_TLS_CERT and MEMORY_TLS_KEY');
+const securePort = Number(process.env.MEMORY_TLS_PORT ?? 8443);
+if (!Number.isInteger(securePort) || securePort < 1 || securePort > 65535 || securePort === port)
+  throw new Error('Invalid MEMORY_TLS_PORT');
+const secureServer = certFile && keyFile ? createMemoryServer(pipeline, { ...serverOptions,
+  tls: { cert: await readFile(certFile), key: await readFile(keyFile) } }) : undefined;
+secureServer?.listen(securePort, process.env.HOST ?? '0.0.0.0', () => {
+  console.log(`KAWK phone interface: https://<this Mac's certificate hostname>:${securePort} (same memory and agent)`);
+});
+// Operational telemetry deliberately excludes transcripts, images and credentials.
+const healthLog = setInterval(() => {
+  const { latencies, ...health } = pipeline.snapshot();
+  console.log(JSON.stringify({ type: 'memory-health', at: new Date().toISOString(), ...health,
+    bridge: bridge?.status(), stages: latencies.filter(row => ['memory_context', 'memory_model', 'memory_commit'].includes(row.stage)) }));
+}, 30_000);
 void embedder.warmup().catch(() => console.error('Embedding model unavailable; indexing will retry when needed'));
 let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearInterval(healthLog);
   server.close(); server.closeAllConnections();
+  secureServer?.close(); secureServer?.closeAllConnections();
   await pipeline.stop(); await bridge?.stop(); store.close();
   process.exit(0);
 }

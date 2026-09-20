@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer, type Server } from 'node:http';
+import { createServer as createSecureServer, type ServerOptions as TlsOptions } from 'node:https';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -13,12 +14,13 @@ interface ServerOptions {
   updateFormat?: string; textReader?: string;
   speechBackend?: 'local' | 'baseten'; speechNotice?: string;
   bridge?: AgentBridge;
+  tls?: Pick<TlsOptions, 'cert' | 'key'>;
 }
 const searchSchema = z.object({
   query: z.string().trim().min(1).max(2000), entityId: z.string().optional(),
   from: z.number().finite().optional(), to: z.number().finite().optional(),
   limit: z.number().int().min(1).max(100).default(20),
-  mode: z.enum(['keyword', 'semantic']).default('semantic'),
+  mode: z.enum(['keyword', 'semantic']).default('keyword'),
 }).refine(v => v.from === undefined || v.to === undefined || v.to >= v.from, 'Invalid time range');
 const transcriptFilterSchema = z.object({
   from: z.coerce.number().finite().nonnegative().optional(),
@@ -28,7 +30,7 @@ const transcriptFilterSchema = z.object({
 
 export function createMemoryServer(pipeline: MemoryPipeline, options: ServerOptions): Server {
   const app = express();
-  const server = createServer(app);
+  const server = options.tls ? createSecureServer(options.tls, app) : createServer(app);
   const upstream = new URL(options.perceptionUrl);
   function sameOrigin(origin: string | undefined, host: string | undefined) {
     if (!origin) return true;

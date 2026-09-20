@@ -61,10 +61,15 @@ async function until(fn: () => boolean | Promise<boolean>, ms = 60000) {
 }
 async function ask(name: string, text: string, expected: RegExp, ms = 60000) {
   const started = Date.now(); const { eventId } = await api("/api/agent/ask", { text });
-  await until(() => deliveries.some(n => n.at >= started && expected.test(n.text)) ||
-    store.tasks(owner).some(t => t.createdAt >= started && ["failed", "abstained"].includes(t.status)), ms);
-  const related = store.tasks(owner).filter(t => store.refs("task", t.id).some(r => r.eventId === eventId));
-  const delivered = deliveries.filter(n => n.at >= started);
+  const relatedTasks = () => store.tasks(owner).filter(t => t.createdAt >= started && store.refs("task", t.id).some(r => r.eventId === eventId));
+  const matchingDeliveries = () => {
+    const ids = new Set(relatedTasks().map(t => t.id));
+    return deliveries.filter(n => n.at >= started && ids.has(n.taskId));
+  };
+  await until(() => matchingDeliveries().some(n => expected.test(n.text)) ||
+    relatedTasks().some(t => ["failed", "abstained"].includes(t.status)), ms);
+  const related = relatedTasks();
+  const delivered = matchingDeliveries();
   const result = { name, eventId, pass: delivered.some(n => expected.test(n.text)),
     e2eMs: delivered.find(n => expected.test(n.text))?.at - started || null,
     decision: decisions.find(d => d.eventId === eventId), tasks: related.map(t => ({ id: t.id, status: t.status, error: t.error, result: t.result })), delivered };
@@ -173,6 +178,7 @@ try {
   }
   record({ summary: { dir, passed: results.filter(r => r.pass).length, total: results.length, captureCount: sequence,
     pendingBridge: (await api("/api/agent/status")).bridge } });
+  if (results.some(r => !r.pass)) process.exitCode = 1;
 } finally {
   abort.abort(); await Promise.allSettled([feed, cameraLoop]); await browser?.close(); await site?.server.stop(true);
   memory.kill("SIGTERM");

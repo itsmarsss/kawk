@@ -110,6 +110,14 @@ test("clock mapping handles asymmetric transit, stale sessions and delayed speec
   expect(relateTime(arrivalFrame, arrivalFrame).uncertaintyKnown).toBe(false);
 });
 
+test("sub-millisecond clock exchanges account for wall-clock quantization without accepting real jumps", () => {
+  const mapping = mapClock("quantized", [{ clientSent: 100.9, clientReceived: 101.1, serverReceived: 1100, serverSent: 1101 }]);
+  expect(mapping.offsetMs - mapping.uncertaintyMs).toBeLessThanOrEqual(999.5);
+  expect(mapping.offsetMs + mapping.uncertaintyMs).toBeGreaterThanOrEqual(999.5);
+  expect(mapping.uncertaintyMs).toBeGreaterThan(0);
+  expect(() => mapClock("jump", [{ clientSent: 100.9, clientReceived: 101.1, serverReceived: 1100, serverSent: 1110 }])).toThrow("Clock changed");
+});
+
 test("Temporal resolves calendar time and rejects DST gaps/repeats and invalid dates", () => {
   expect(resolveLocalTime("2026-09-20T09:00:00", "America/Toronto")).toBe(
     Date.parse("2026-09-20T13:00:00Z"),

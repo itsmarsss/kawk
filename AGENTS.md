@@ -60,9 +60,10 @@ inspiration is allowed; **do not copy its implementation**. See
   grep spans hours and the active journal. Keep correction/deletion consistent
   across sources, derived claims and exports. Summaries never replace raw evidence.
 - Agent retrieval defaults to `grep_history` and literal scene-memory search.
-  Do not add another semantic service. The imported scene app retains optional
-  vector search, and its **writer currently uses MiniLM/sqlite-vec for continuity
-  context**; that existing internal path is distinct from agent history grep.
+  Writer continuity uses indexed **literal word overlap (SQLite FTS5)** by default,
+  with exact faces, current state and recent identities. Do not put embedding calls
+  back on the writer's critical path. The imported scene app retains explicitly
+  optional vector search and asynchronous vector indexing; no new semantic service.
 - Preserve stable people, objects, places and events with source observations and
   evolving attributes. Possible matches remain candidates, not confirmed identity.
 - Pair faces with the exact canvas/photo that produced them. Never substitute a
@@ -76,6 +77,9 @@ inspiration is allowed; **do not copy its implementation**. See
 - Repeated JPEGs share content-addressed storage: write atomically to avoid
   truncating a file another worker is reading. Yield between synchronous history
   searches so a batch cannot monopolize the Node event loop and stall speech.
+- Reserve queue capacity before asynchronous file writes, including the four extra
+  interrupt slots. Attribute projection scans supported observations once and
+  writes changed entities only; never restore an entity-by-entire-history loop.
 
 ## Jev, identities and actions
 
@@ -149,6 +153,13 @@ memory and Bun, and connects their token server-side. Default data paths are
 `memory/data/` and `agent/data/`. `MEMORY_DATA_DIR` can reuse an existing store;
 never run two memory writers against that directory.
 
+The launcher enables local browser interaction by default. Optional
+`MEMORY_TLS_CERT` + `MEMORY_TLS_KEY` add the same app on HTTPS `:8443`
+(`MEMORY_TLS_PORT` overrides it); HTTP `:8082` remains the local agent connection.
+Both listeners share one pipeline/store. A phone must trust the certificate and
+use its matching hostname/IP. Never commit TLS private keys or a local CA key.
+The memory process emits content-free health/stage logs every 30 seconds.
+
 This machine's merged runtime reuses `htn2026-chud3/memory/data` to preserve
 recordings. Preserve that source worktree, gallery, models and credentials. Model
 download/cold-start time is separate from steady-state latency. Normal unit tests
@@ -195,8 +206,11 @@ image interpretation, browser file work and cancellation with controlled inputs.
 Local speech used generated PCM; local face verification used an existing recorded
 gallery image without changing the gallery. Neither proves worn-device accuracy.
 
-The existing scene writer can lag by many minutes during sustained capture.
-Source-backed agent answers can bypass it but still incur model latency. Baseten
+The earlier scene-writer bottlenecks have been removed: a copied 37,290-observation
+store's attribute rebuild fell from 3.79 s to 10 ms; indexed lexical context took
+306 ms. The live queue is draining under continued capture, but accumulated work
+is not discarded and provider latency still matters. Source-backed agent answers
+can bypass the ordered writer. Baseten
 is unavailable for this demo. iPhone device selection, venue audio/face accuracy,
 physical glasses/display transport and iOS background push still need live-device
 verification. The merged service worker has no push handler; standalone agent Web

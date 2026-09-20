@@ -19,6 +19,35 @@ const transcript = (revision: number, isFinal: boolean): Transcript => ({ sessio
   revision, isFinal, text: isFinal ? 'Where are my keys?' : 'Where are', startAt: 900, endAt: 1000,
   receivedAt: 1100, words: [], speakerId: null, timing: 'approximate' });
 
+test('merged push proxy keeps authentication server-side and forwards DELETE bodies', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kawk-push-bridge-'));
+  const tokenFile = join(dir, 'token'); await writeFile(tokenFile, 'x'.repeat(48));
+  const store = new Store(':memory:', 3, 'test'); const requests: { url: string; method: string; body?: string; token: string | null }[] = [];
+  const bridge = new AgentBridge(store, { url: 'http://agent.test', tokenFile, autoStart: false,
+    fetch: (async (url: any, init: any) => {
+      requests.push({ url: String(url), method: init.method, body: init.body, token: new Headers(init.headers).get('authorization') });
+      return Response.json({ ok: true });
+    }) as typeof fetch });
+  const pipeline = new MemoryPipeline(store, { observe: async () => vision, update: async () => { throw Error('unused'); } },
+    { model: 'test', dimensions: 3, embed: async () => [] }, { dataDir: dir, autoStart: false });
+  const server = createMemoryServer(pipeline, { perceptionUrl: 'http://127.0.0.1:1', publicDir: dir, provider: 'test', model: 'test', bridge });
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    for (const [path, method, body] of [['key', 'GET', undefined], ['status', 'GET', undefined],
+      ['test', 'POST', {}], ['subscriptions', 'POST', { endpoint: 'https://push.example/a' }],
+      ['subscriptions', 'DELETE', { endpoint: 'https://push.example/a' }]] as const) {
+      const r = await fetch(`${base}/api/agent/push/${path}`, { method, headers: { 'Content-Type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      assert.deepEqual(await r.json(), { ok: true });
+    }
+    assert.ok(requests.every(r => r.token === `Bearer ${'x'.repeat(48)}`));
+    assert.equal(requests.at(-1)?.method, 'DELETE');
+    assert.deepEqual(JSON.parse(requests.at(-1)!.body!), { endpoint: 'https://push.example/a' });
+    assert.ok(requests.every(r => r.url.startsWith('http://agent.test/v1/push/')));
+  } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); await bridge.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('attaching the bridge backfills pre-existing source history once without treating it as live speech', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'kawk-history-bridge-'));
   const tokenFile = join(dir, 'token'); await writeFile(tokenFile, 'x'.repeat(48));

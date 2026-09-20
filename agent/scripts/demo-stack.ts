@@ -10,7 +10,11 @@ const memoryPort = Number(process.env.PORT ?? 8082);
 const perception = process.env.MEMORY_PERCEPTION_URL ?? "http://127.0.0.1:8081";
 if (!process.env.OPENAI_API_KEY || !process.env.TYPESAFE_API_KEY)
   throw new Error("Configure OPENAI_API_KEY and TYPESAFE_API_KEY in private agent/.env");
-for (const port of [agentPort, memoryPort]) {
+if (Boolean(process.env.MEMORY_TLS_CERT) !== Boolean(process.env.MEMORY_TLS_KEY))
+  throw new Error('Set both MEMORY_TLS_CERT and MEMORY_TLS_KEY');
+const ports = [agentPort, memoryPort, ...(process.env.MEMORY_TLS_CERT ? [Number(process.env.MEMORY_TLS_PORT ?? 8443)] : [])];
+if (new Set(ports).size !== ports.length) throw new Error('Demo ports must be distinct');
+for (const port of ports) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid demo port");
   await new Promise<void>((ok, fail) => {
     const probe = createServer();
@@ -34,6 +38,7 @@ token ||= crypto.randomUUID() + crypto.randomUUID();
 if (token.length < 32) throw new Error("Invalid local client token");
 await writeFile(tokenFile, token + "\n", { mode: 0o600 });
 const env = { ...process.env, KAWK_DATA_DIR: data, KAWK_CLIENT_TOKEN: token,
+  KAWK_BROWSER_INTERACTION: process.env.KAWK_BROWSER_INTERACTION ?? '1',
   KAWK_BASETEN_ENABLED: "0", MEMORY_SPEECH_BACKEND: "local", MEMORY_PERCEPTION_URL: perception,
   KAWK_AGENT_URL: `http://127.0.0.1:${agentPort}`, KAWK_AGENT_TOKEN_FILE: tokenFile,
   KAWK_SCENE_MEMORY_URL: `http://127.0.0.1:${memoryPort}` };
@@ -55,6 +60,7 @@ try {
   children.push(Bun.spawn(["node", "--import", "tsx", "src/main.ts"], { cwd: resolve(root, "memory"), env, stdout: "inherit", stderr: "inherit" }));
   console.log(`Demo UI: http://localhost:${memoryPort} — press Start, then choose camera and microphone.`);
   console.log("Local perception is reused; stopping this command leaves it running.");
+  if (process.env.MEMORY_TLS_CERT) console.log(`Phone PWA: https://<certificate hostname>:${ports[2]} — use the same Wi-Fi and trust the certificate on the phone.`);
   const exit = await Promise.race(children.map(c => c.exited));
   if (!stopping) await stop(exit || 1);
 } catch (error) {

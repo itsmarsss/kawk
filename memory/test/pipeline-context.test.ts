@@ -36,7 +36,7 @@ function delta(summary: string): MemoryDelta {
 async function setup(model: Interpreter, embedder = vectors) {
   const dir = await mkdtemp(join(tmpdir(), 'kawk-context-'));
   const store = new Store(join(dir, 'memory.db'), 3, 'test-vector'); store.createSession('s', 0);
-  const pipeline = new MemoryPipeline(store, model, embedder, { dataDir: dir, autoStart: false, transcriptWords: 3 });
+  const pipeline = new MemoryPipeline(store, model, embedder, { dataDir: dir, autoStart: false, transcriptWords: 3, contextRetrieval: 'semantic' });
   return { dir, store, pipeline, async cleanup() { await pipeline.stop(); store.close(); await rm(dir, { recursive: true }); } };
 }
 async function seed(s: Awaited<ReturnType<typeof setup>>, revision = 1) {

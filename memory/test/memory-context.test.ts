@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Store } from '../src/store.js';
-import { buildMemoryContext } from '../src/memory-context.js';
+import { buildMemoryContext as buildContext } from '../src/memory-context.js';
+// These legacy fixtures exercise the explicitly optional semantic mode.
+const buildMemoryContext = (store: Store, embedder: Embedder, packets: Packet[], onFailure?: () => void) =>
+  buildContext(store, embedder, packets, onFailure, 'semantic');
 import { transcriptKey, type CaptureRecord, type Embedder, type MemoryDelta, type Packet,
   type Transcript, type Vision } from '../src/contracts.js';
 
@@ -37,6 +40,39 @@ function seedObjects(store: Store, id: string, at: number, count: number) {
   return store.packetEntities(id);
 }
 const unavailable: Embedder = { model: 'fixture', dimensions: 3, embed: async () => { throw new Error('offline'); } };
+
+test('default writer retrieval uses literal indexed history without embedding inference and excludes removed people', async t => {
+  const store = new Store(':memory:', 3, 'fixture'); t.after(() => store.close()); store.createSession('session', 0);
+  const old = packet('old-keys', 10, { ...baseVision, observations: ['A distinctive magenta keyring beside the sink.'] });
+  const value = delta();
+  value.entities.push({ ref: 'keys', existingId: null, kind: 'object', label: 'Magenta keyring', description: 'A magenta keyring.', personId: null });
+  value.facts.push({ entityRefs: ['keys'], text: 'The magenta keyring is beside the sink.', visual: true,
+    transcriptKeys: [], confidence: 'observed', attribute: 'location', value: 'sink' });
+  commit(store, old, value);
+  seedObjects(store, 'later-items', 20, 30);
+  let embeddingCalls = 0;
+  const context = await buildContext(store, { ...unavailable, embed: async () => { embeddingCalls++; throw Error('must not embed'); } },
+    [packet('now', 30, { ...baseVision, scene: 'Magenta keyring', observations: [] })]);
+  assert.equal(embeddingCalls, 0);
+  assert.ok(context.related.some(note => note.text.includes('magenta keyring')));
+  const remembered = context.entities.find(entity => entity.label === 'Magenta keyring');
+  assert.equal(remembered?.attributes.location.value, 'sink');
+  const bob = packet('bob', 40); face(bob, 'bob', 'Zebediah'); commit(store, bob, delta());
+  assert.ok(store.contextNotes(['Zebediah']).length);
+  store.removePeople(['bob']);
+  assert.equal(store.contextNotes(['Zebediah']).length, 0);
+  store.db.prepare("UPDATE observations SET superseded=1 WHERE text LIKE '%magenta%'").run();
+  assert.equal(store.contextNotes(['magenta']).length, 0, 'superseded evidence stays out despite retained index entries');
+});
+
+test('lexical writer index quotes untrusted words and tracks text corrections', t => {
+  const store = new Store(':memory:', 3, 'fixture'); t.after(() => store.close()); store.createSession('session', 0);
+  commit(store, packet('source', 10, { ...baseVision, scene: 'UniqueA', observations: [] }), delta());
+  assert.equal(store.contextNotes(['UniqueA " OR ( *']).length, 1);
+  store.db.prepare("UPDATE observations SET text='UniqueB' WHERE text='UniqueA'").run();
+  assert.equal(store.contextNotes(['UniqueA']).length, 0);
+  assert.equal(store.contextNotes(['UniqueB']).length, 1);
+});
 
 test('continuity retains the full latest scene, ongoing events and exact faces without unrelated anonymous bodies', async t => {
   const store = new Store(':memory:', 3, 'fixture'); t.after(() => store.close()); store.createSession('session', 0);

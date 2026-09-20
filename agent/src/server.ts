@@ -214,6 +214,10 @@ export function serve(
               ),
             );
         }
+        if (path === "/v1/push/status" && request.method === "GET")
+          return options.push ? json(options.push.status(owner)) : json({ error: "Push is not configured" }, 503);
+        if (path === "/v1/push/test" && request.method === "POST")
+          return options.push ? json(options.push.testNotification(owner), 202) : json({ error: "Push is not configured" }, 503);
         if (path === "/v1/time" && request.method === "GET")
           return json({ receivedAt, sentAt: Date.now(), timeZone: harness.timeZone });
         if (path === "/v1/history/grep" && request.method === "POST")

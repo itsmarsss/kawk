@@ -63,7 +63,10 @@ For each existing physical object visibly referenced, give objectMatches {ref,as
 Use same_instance when the descriptions and temporal context support continuity; use possible when
 ambiguous, obscured, conflicting or confused with another similar object. Explain the evidence in
 one sentence. Make this judgment yourself; no marker/anchor protocol is required. Do not force a
-match just to avoid creating an entity. New objects and speech-only mentions need no objectMatch.
+match just to avoid creating an entity. objectMatches.ref must be a local ref declared in THIS
+row's entities with kind=object and a reused existingId (or a valid backward batch reuse).
+Never put a person, place, event, canonical database ID or undeclared ref in objectMatches.
+New objects and speech-only mentions must have NO objectMatch; use an empty array when none qualify.
 Possible matches retain their notes without changing the known object's location or metadata.
 
 Add useful atomic facts and associations, including ordinary details, personal interests/plans,
@@ -71,7 +74,8 @@ object locations, spatial relations, readable text and lecture/meeting content. 
 notes and final transcripts are retained separately, so focus on linking and developing memories.
 Avoid repeating overlapping speech/already-recorded claims. Every fact cites this photo (visual=true)
 or eligible FINAL transcriptKeys (visual=false); uncertain readings stay confidence=uncertain.
-For an attribute/value use exactly one entityRef; relations may link several with null attributes.
+For an attribute/value use exactly one entityRef, and supply both strings or both null;
+relations may link several with null attributes.
 Never use withheld partial text. Never invent speaker identity from a visible face. Link speech to
 an explicitly named person or its own unambiguous transcriptContexts, not whoever appears later.
 Shared conversation context is not proof that the named person spoke. Person appearance requires
