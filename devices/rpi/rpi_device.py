@@ -14,12 +14,31 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import socket
 import struct
 import sys
 import threading
 import time
 
 import websockets
+
+# Anti-bufferbloat (UDP-style semantics over the one §5 WebSocket): keep the OS
+# send buffer to ~2 frames so TCP cannot hoard stale frames. When the link dips,
+# ws.send() blocks IMMEDIATELY and the newest-wins camera slot drops frames
+# BEFORE they are sent — latency stays bounded instead of compounding.
+SNDBUF_BYTES = 64 * 1024  # Linux doubles this -> ~128 KB ≈ 2 frames at 720p q70
+WRITE_LIMIT = 64 * 1024  # websockets' own write buffer bound
+
+
+def tune_socket(ws) -> None:
+    try:
+        sock = ws.transport.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SNDBUF_BYTES)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception as e:
+        print(f"[rpi] socket tuning failed ({e}); continuing", file=sys.stderr)
+
 
 HDR = struct.Struct("<BBHI")
 T_VIDEO = 0x01
@@ -235,6 +254,7 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
 
         seq = 0
         sent = 0
+        worst_send = 0.0
         t_report = time.monotonic()
         next_send = time.monotonic()
         loop = asyncio.get_running_loop()
@@ -254,11 +274,18 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
             jpeg = camera.latest()
             if jpeg is not None:
                 seq = (seq + 1) & 0xFFFF
+                t_send = time.monotonic()
+                # ts_ms stamped at SEND time; with the small SNDBUF, a blocked
+                # send is the backpressure signal — camera frames drop upstream.
                 await ws.send(HDR.pack(T_VIDEO, 0, seq, millis()) + jpeg)
+                send_ms = (time.monotonic() - t_send) * 1000
+                worst_send = max(worst_send, send_ms)
                 sent += 1
             if time.monotonic() - t_report >= 5.0:
-                print(f"[rpi] {sent / (time.monotonic() - t_report):.1f} fps sent")
-                sent, t_report = 0, time.monotonic()
+                rate = sent / (time.monotonic() - t_report)
+                note = f", worst send {worst_send:.0f}ms" if worst_send > 100 else ""
+                print(f"[rpi] {rate:.1f} fps sent{note}")
+                sent, worst_send, t_report = 0, 0.0, time.monotonic()
             # Deadline pacing: sleep to the NEXT slot so send time doesn't eat the period.
             next_send += interval
             delay = next_send - time.monotonic()
@@ -290,7 +317,10 @@ async def main() -> None:
     try:
         while True:
             try:
-                async with websockets.connect(args.hub, compression=None) as ws:
+                async with websockets.connect(
+                    args.hub, compression=None, write_limit=WRITE_LIMIT
+                ) as ws:
+                    tune_socket(ws)
                     print(f"[rpi] connected to {args.hub}")
                     backoff = 0.5
                     await session(ws, camera, video_cfg, args.device_id)
