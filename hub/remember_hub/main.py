@@ -22,6 +22,7 @@ from pathlib import Path
 from .branding import PRODUCT_NAME
 from .bus import EventBus
 from .config import AppConfig, load_config
+from .dashboard import Dashboard
 from .devicelink.server import DeviceLinkServer
 from .display.compositor import Compositor
 from .gate import create_jev_backend
@@ -75,6 +76,7 @@ class Hub:
     sam_driver: SamDriver
     face_driver: FaceDriver
     stt_driver: SttDriver
+    dashboard: Dashboard | None = None
     port: int | None = None
 
     async def start(self, port: int | None = None) -> int:
@@ -83,6 +85,8 @@ class Hub:
         self.sam_driver.start()
         self.face_driver.start()
         self.stt_driver.start()
+        if self.dashboard is not None:
+            await self.dashboard.start()
         log.info(
             "%s hub up on ws://%s:%s (sam=%s face=%s stt=%s jev=%s)",
             PRODUCT_NAME,
@@ -99,6 +103,8 @@ class Hub:
         for driver in (self.sam_driver, self.face_driver, self.stt_driver):
             driver.stop()
         self.policy.stop()
+        if self.dashboard is not None:
+            await self.dashboard.stop()
         await self.link.stop()
         self.memory.close()
 
@@ -128,7 +134,11 @@ def build_hub(config: AppConfig) -> Hub:
     )
     router = TaskRouter(bus, world, memory, gallery)
     link = DeviceLinkServer(bus, config.devicelink, config.devices)
+    dashboard = (
+        Dashboard(bus, link, compositor, config.dashboard) if config.dashboard.enabled else None
+    )
     return Hub(
+        dashboard=dashboard,
         config=config,
         bus=bus,
         memory=memory,
