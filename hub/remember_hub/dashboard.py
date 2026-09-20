@@ -75,6 +75,9 @@ _PAGE = r"""<!doctype html>
   .stat b { color:var(--text); font-size:15px; }
   canvas { width:100%; height:48px; display:block; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  #toast { font-size:12px; min-width:120px; }
+  #toast.ok { color:var(--ok); } #toast.busy { color:var(--warn); } #toast.bad { color:var(--bad); }
+  img#feed.switching { opacity:.35; transition:opacity .3s; }
   .muted { color:var(--dim); font-style:italic; }
   .dev { font-size:12px; line-height:1.8; }
   .dev b { color:var(--acc); }
@@ -95,20 +98,14 @@ _PAGE = r"""<!doctype html>
       <button id="flipV">flip ↕</button>
       <button onclick="window.open('/frame.jpg','_blank')">snapshot</button>
       <span style="flex:1"></span>
-      <select id="res">
-        <option value="640x480">640×480</option>
-        <option value="1280x720" selected>1280×720</option>
-        <option value="1920x1080">1920×1080</option>
-      </select>
-      <select id="fps">
-        <option>5</option><option>10</option><option>15</option>
-        <option selected>24</option><option>30</option>
-      </select>
-      <label>q <input id="q" type="range" min="10" max="95" value="70"
+      <span class="kv">mode</span>
+      <button class="preset" data-w="640" data-h="480" data-fps="15">480p·15</button>
+      <button class="preset" data-w="1280" data-h="720" data-fps="24">720p·24</button>
+      <button class="preset" data-w="1920" data-h="1080" data-fps="24">1080p</button>
+      <label class="kv">q <input id="q" type="range" min="10" max="95" value="70"
         oninput="document.getElementById('qv').textContent=this.value"></label>
-      <span id="qv">70</span>
-      <button id="apply">apply</button>
-      <span id="applyMsg"></span>
+      <span id="qv" class="kv">70</span>
+      <span id="toast"></span>
     </div>
     <div class="grid2" style="margin-top:14px;">
       <div class="panel">
@@ -156,19 +153,28 @@ document.getElementById('flipH').onclick = () => { fx ^= 1; localStorage.fx = fx
 document.getElementById('flipV').onclick = () => { fy ^= 1; localStorage.fy = fy; applyFlip(); };
 applyFlip();
 
-// ---- device control
-document.getElementById('apply').onclick = async () => {
-  const [w, h] = document.getElementById('res').value.split('x');
-  const fps = document.getElementById('fps').value;
+// ---- device control: one-click presets with real switch feedback
+const toast = document.getElementById('toast');
+let pending = null;  // {w, h, t0} — cleared when frames at the new size arrive
+let currentCfg = null;
+
+async function applyCfg(w, h, fps) {
   const q = document.getElementById('q').value;
-  const msg = document.getElementById('applyMsg');
-  msg.textContent = '…';
+  toast.textContent = `switching to ${w}×${h}…`;
+  toast.className = 'busy';
+  document.getElementById('feed').classList.add('switching');
+  pending = { w: +w, h: +h, t0: Date.now() };
   try {
     const r = await (await fetch(`/control?w=${w}&h=${h}&fps=${fps}&quality=${q}`)).json();
-    msg.textContent = r.ok ? `pushed to ${r.pushed.join(', ')}` : 'no device connected';
-  } catch (e) { msg.textContent = 'failed'; }
-  setTimeout(() => { msg.textContent = ''; }, 4000);
-};
+    if (!r.ok) { toast.textContent = 'no device connected'; toast.className = 'bad'; pending = null;
+                 document.getElementById('feed').classList.remove('switching'); }
+  } catch (e) { toast.textContent = 'push failed'; toast.className = 'bad'; pending = null; }
+}
+for (const b of document.querySelectorAll('.preset'))
+  b.onclick = () => applyCfg(b.dataset.w, b.dataset.h, b.dataset.fps);
+document.getElementById('q').addEventListener('change', () => {
+  if (currentCfg) applyCfg(currentCfg.w, currentCfg.h, currentCfg.fps);
+});
 
 // ---- sparkline history (client-side ring buffers over /stats.json polls)
 const CAP = 180;  // 3 min at 1 Hz
@@ -200,11 +206,7 @@ function spark(id, data, color) {
 }
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const fmtUp = s => s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
-
-// Sync controls to the device's ACTUAL config once — but never fight the user.
-let controlsTouched = false, controlsSynced = false;
-for (const id of ['res', 'fps', 'q'])
-  document.getElementById(id).addEventListener('input', () => { controlsTouched = true; });
+let qSynced = false;
 
 async function poll() {
   try {
@@ -226,14 +228,29 @@ async function poll() {
       spark('c_lag', hist.lag, css('--warn'));
       spark('c_mbps', hist.mbps, css('--ok'));
       spark('c_kb', hist.kb, css('--dim'));
-      if (d.cfg && !controlsSynced && !controlsTouched) {
-        controlsSynced = true;
-        const res = document.getElementById('res');
-        const want = `${d.cfg.w}x${d.cfg.h}`;
-        if ([...res.options].some(o => o.value === want)) res.value = want;
-        document.getElementById('fps').value = String(d.cfg.fps);
-        document.getElementById('q').value = d.cfg.quality;
-        document.getElementById('qv').textContent = d.cfg.quality;
+      if (d.cfg) {
+        currentCfg = d.cfg;
+        if (!qSynced) {
+          qSynced = true;
+          document.getElementById('q').value = d.cfg.quality;
+          document.getElementById('qv').textContent = d.cfg.quality;
+        }
+        for (const b of document.querySelectorAll('.preset'))
+          b.classList.toggle('on', +b.dataset.w === d.cfg.w && +b.dataset.h === d.cfg.h);
+      }
+      if (pending) {
+        if (d.wh && d.wh[0] === pending.w && d.wh[1] === pending.h) {
+          toast.textContent = `${pending.w}×${pending.h} live ✓`;
+          toast.className = 'ok';
+          document.getElementById('feed').classList.remove('switching');
+          pending = null;
+          setTimeout(() => { if (!pending) { toast.textContent = ''; toast.className = ''; } }, 4000);
+        } else if (Date.now() - pending.t0 > 15000) {
+          toast.textContent = 'switch timed out — check device log';
+          toast.className = 'bad';
+          document.getElementById('feed').classList.remove('switching');
+          pending = null;
+        }
       }
     } else {
       chip.textContent = 'no device';
