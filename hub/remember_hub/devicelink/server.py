@@ -69,13 +69,20 @@ class DeviceSession:
             return time.time()
         return self.first_frame_wall + (ts_ms - self.first_device_ts) / 1000.0
 
+    # Bufferbloat detector: lag vs the FASTEST frame ever seen (running-min
+    # one-way-delay offset). Anchoring to the first frame is wrong — if the
+    # first frame was itself delayed, every later reading clamps to zero.
+    _min_offset: float | None = None
+    last_lag_ms: float | None = None
+
+    def note_frame_timing(self, ts_ms: int, t_hub: float) -> None:
+        offset = t_hub - ts_ms / 1000.0
+        if self._min_offset is None or offset < self._min_offset:
+            self._min_offset = offset
+        self.last_lag_ms = max(0.0, (offset - self._min_offset) * 1000.0)
+
     def frame_lag_ms(self) -> float | None:
-        """Delivery lag of the newest frame vs the device's own clock — the
-        bufferbloat detector: growing lag = stale frames queuing in TCP/WiFi."""
-        if self.latest_frame is None:
-            return None
-        sent_at = self.device_ts_to_hub(self.latest_frame.ts_ms)
-        return max(0.0, (self.latest_frame.t_hub - sent_at) * 1000.0)
+        return self.last_lag_ms
 
     def offer_display(self, action: DisplayAction) -> None:
         """Newest-wins: replace any queued action instead of ever backing up."""
@@ -175,13 +182,15 @@ class DeviceLinkServer:
             if wh is None:  # unparseable JPEG: fall back to the config'd resolution
                 video = session.config.get("video", {})
                 wh = (video.get("w", 640), video.get("h", 480))
+            t_hub = time.time()
             session.latest_frame = LatestFrame(
                 jpeg=frame.payload,
                 wh=wh,
                 seq=frame.seq,
                 ts_ms=frame.ts_ms,
-                t_hub=time.time(),
+                t_hub=t_hub,
             )
+            session.note_frame_timing(frame.ts_ms, t_hub)
             session.frames_rx += 1
         elif frame.type == wire.T_AUDIO:
             session.audio_rx += 1
