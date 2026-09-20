@@ -34,3 +34,16 @@ hotspot WiFi, ~34 KB/frame, capture+encode 28 ms/frame (36 fps ceiling). Ops not
 
 Note: picamera2's "RGB888" arrays are BGR channel order — simplejpeg is called with
 `colorspace="BGR"` on purpose. If colors ever look swapped, that flag is the knob.
+
+## Boot persistence + WiFi stability (installed on the rig 2026-09-20)
+
+The Pi lost power twice during setup, so the client now runs as a systemd service
+(`remember-rpi.service`, checked in here) — starts on boot, restarts on crash, logs to
+`/var/log/remember-rpi.log`. Two more fixes that matter on this rig:
+- **WiFi power save OFF** (`/etc/NetworkManager/conf.d/wifi-powersave.conf`,
+  `wifi.powersave = 2`): with it on, ping jitter was 8–786 ms (avg ~400); off, ~36 ms.
+- **DNS pinned via NetworkManager** (`nmcli con mod <con> ipv4.dns "1.1.1.1 8.8.8.8"
+  ipv4.ignore-auto-dns yes`) — the hotspot's DHCP hands out no working DNS and the
+  resolv.conf came up empty after reboots.
+If the hub machine's IP changes, edit `ExecStart` in the unit and
+`sudo systemctl daemon-reload && sudo systemctl restart remember-rpi`.

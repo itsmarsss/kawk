@@ -1,0 +1,17 @@
+# Installed at /etc/systemd/system/remember-rpi.service on the Pi.
+# sudo systemctl daemon-reload && sudo systemctl enable --now remember-rpi
+[Unit]
+Description=Remember camera device client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/kawk/remember/rpi_device.py --hub ws://192.168.137.47:8765
+Restart=always
+RestartSec=3
+User=kawk
+StandardOutput=append:/var/log/remember-rpi.log
+StandardError=append:/var/log/remember-rpi.log
+
+[Install]
+WantedBy=multi-user.target
