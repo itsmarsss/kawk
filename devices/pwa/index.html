@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Remember</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0b0e14">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Remember</h1>
+    <span class="chip" id="conn">connecting…</span>
+    <span class="chip" id="push">push: off</span>
+  </header>
+
+  <div id="install-hint" class="banner" hidden>
+    On iPhone: open in Safari → Share → <b>Add to Home Screen</b>, then launch from the
+    icon — iOS only allows notifications for installed web apps.
+  </div>
+
+  <main>
+    <section class="panel current">
+      <h2>now</h2>
+      <div id="card">
+        <div class="tpl" id="card-tpl">idle</div>
+        <div class="title" id="card-title">—</div>
+        <div class="body" id="card-body">waiting for the hub…</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>controls</h2>
+      <div class="row">
+        <button id="enable">Enable notifications</button>
+        <button id="test" class="ghost">Send test</button>
+      </div>
+      <div class="hint" id="hint"></div>
+    </section>
+
+    <section class="panel">
+      <h2>history</h2>
+      <ul id="history"></ul>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

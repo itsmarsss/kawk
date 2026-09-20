@@ -1,0 +1,44 @@
+/* Matches the hub dashboard palette (dashboard.py) so the ops surfaces feel like one system. */
+:root {
+  --bg: #0b0e14; --panel: #11141c; --line: #313244; --text: #cdd6f4;
+  --dim: #94a3c0; --acc: #89b4fa; --ok: #a6e3a1; --warn: #f9e2af; --bad: #f38ba8;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--text); margin: 0;
+  padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+  font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; color: var(--acc); flex: 1; }
+h2 { font-size: 11px; letter-spacing: .08em; margin: 0 0 8px; color: var(--dim);
+     text-transform: uppercase; }
+.chip { background: var(--panel); border: 1px solid var(--line); border-radius: 99px;
+        padding: 2px 11px; font-size: 12px; color: var(--dim); }
+.chip.ok { border-color: var(--ok); color: var(--ok); }
+.chip.bad { border-color: var(--bad); color: var(--bad); }
+.banner { background: #2a2438; border: 1px solid #585274; border-radius: 10px;
+          padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+main { display: flex; flex-direction: column; gap: 14px; max-width: 560px; margin: 0 auto; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+         padding: 14px 16px; }
+.current { min-height: 120px; }
+.tpl { display: inline-block; font-size: 11px; color: var(--bg); background: var(--dim);
+       border-radius: 5px; padding: 1px 7px; text-transform: uppercase; letter-spacing: .05em; }
+body[data-template="answer"] .current .tpl,
+body[data-template="alert"] .current .tpl { background: var(--ok); }
+body[data-template="enroll_prompt"] .current .tpl { background: var(--warn); }
+body[data-template="profile"] .current .tpl { background: var(--acc); }
+.title { font-size: 22px; font-weight: 600; margin: 8px 0 4px; }
+.body { color: var(--dim); }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+button { background: #1e2433; color: var(--text); border: 1px solid #45475a; border-radius: 8px;
+         padding: 10px 16px; font: inherit; cursor: pointer; flex: 1; }
+button:active { background: #2a3145; }
+button.ghost { flex: 0 1 auto; color: var(--dim); }
+.hint { margin-top: 10px; font-size: 12px; color: var(--warn); min-height: 1em; }
+ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+li { border-bottom: 1px solid var(--line); padding-bottom: 8px; font-size: 13px; }
+li .tpl { margin-right: 6px; }
+li .body { display: block; font-size: 12px; }
+li time { float: right; color: var(--dim); font-size: 11px; }
