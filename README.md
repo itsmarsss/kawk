@@ -64,3 +64,9 @@ Always-on camera + mic with face recognition: enrollment is **explicit verbal op
 ("Who is this?" → the person states their name), `make demo` data is fully synthetic,
 recordings stay on the demo machine. InsightFace weights are research-use only — this
 is a hackathon prototype.
+
+## Dashboard
+
+`make hub` also serves **http://127.0.0.1:8090** — live camera feed (MJPEG), per-device
+fps/frame stats, the current display card, and recent display actions. Pin one device
+with `/stream?device=<id>`. Config under `[dashboard]` in remember.toml.
