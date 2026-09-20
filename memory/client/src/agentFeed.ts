@@ -42,21 +42,28 @@ export class NotificationLedger {
 
 export interface RefView { label: string; href: string | null }
 const sameOriginPath = (s: string): boolean => s.startsWith('/') && !s.startsWith('//');
-/** Refs: `"/v1/artifacts/abc"`, `{url|href:"/…"}`, `{artifactId:"abc"}`, `{type:"artifact",id:"abc"}`, `{captureId}`; others → text. */
+const ARTIFACT_ID = /^[0-9a-f-]+$/; // the bridge proxies only /v1/artifacts/<lowercase hex/dash id>; anything else has no valid path
+const artifactHref = (id: string): string | null => (ARTIFACT_ID.test(id) ? `/v1/artifacts/${id}` : null);
+/**
+ * Refs: `"/v1/artifacts/abc"`, `{url|href:"/…"}`, `{artifactId}`, `{type:"artifact",id}` → links when the path is valid;
+ * `{captureId}` → the frame route; evidence refs `{eventId, revision}` and everything else → plain text (no invented links).
+ */
 export function refView(ref: unknown): RefView {
   if (typeof ref === 'string') return sameOriginPath(ref) ? { label: ref, href: ref } : { label: ref, href: null };
   if (!ref || typeof ref !== 'object') return { label: String(ref), href: null };
   const o = ref as Record<string, unknown>;
   const label = typeof o.label === 'string' ? o.label : typeof o.title === 'string' ? o.title : null;
   for (const k of ['url', 'href']) { const v = o[k]; if (typeof v === 'string' && sameOriginPath(v)) return { label: label ?? v, href: v }; }
-  if (typeof o.artifactId === 'string') return { label: label ?? `artifact ${o.artifactId}`, href: `/v1/artifacts/${encodeURIComponent(o.artifactId)}` };
-  if (o.type === 'artifact' && typeof o.id === 'string') return { label: label ?? `artifact ${o.id}`, href: `/v1/artifacts/${encodeURIComponent(o.id)}` };
+  if (typeof o.artifactId === 'string') return { label: label ?? `artifact ${o.artifactId}`, href: artifactHref(o.artifactId) };
+  if (o.type === 'artifact' && typeof o.id === 'string') return { label: label ?? `artifact ${o.id}`, href: artifactHref(o.id) };
+  if (typeof o.eventId === 'string') return { label: label ?? `evidence event ${o.eventId}${typeof o.revision === 'number' ? ` r${o.revision}` : ''}`, href: null };
   if (typeof o.captureId === 'string') return { label: label ?? `source image ${o.captureId}`, href: `/api/frames/${encodeURIComponent(o.captureId)}` };
   if (typeof o.type === 'string' && typeof o.id === 'string') return { label: label ?? `${o.type} ${o.id}`, href: null };
   return { label: label ?? JSON.stringify(o).slice(0, 80), href: null };
 }
 
-const TERMINAL = new Set(['done', 'completed', 'complete', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled', 'aborted', 'expired', 'rejected']);
+/** Statuses after which a task can no longer be cancelled. `abstained`/`superseded` are Jev-gated endings. */
+const TERMINAL = new Set(['done', 'completed', 'complete', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled', 'aborted', 'expired', 'rejected', 'abstained', 'superseded']);
 export function isActiveTask(status: unknown): boolean { return typeof status === 'string' && !TERMINAL.has(status.toLowerCase()); }
 export function taskResultText(result: unknown): string | null {
   if (result === null || result === undefined) return null;

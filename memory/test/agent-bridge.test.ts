@@ -19,6 +19,25 @@ const transcript = (revision: number, isFinal: boolean): Transcript => ({ sessio
   revision, isFinal, text: isFinal ? 'Where are my keys?' : 'Where are', startAt: 900, endAt: 1000,
   receivedAt: 1100, words: [], speakerId: null, timing: 'approximate' });
 
+test('attaching the bridge backfills pre-existing source history once without treating it as live speech', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kawk-history-bridge-'));
+  const tokenFile = join(dir, 'token'); await writeFile(tokenFile, 'x'.repeat(48));
+  const store = new Store(':memory:', 3, 'test'); store.createSession('session', 0);
+  store.saveTranscript(transcript(0, false)); store.saveTranscript(transcript(1, true));
+  store.insertCapture(capture()); store.saveVision('photo', vision);
+  const requests: any[] = [];
+  const send = (async (_url: any, init: any) => { requests.push(JSON.parse(init.body)); return new Response('{}', { status: 202 }); }) as typeof fetch;
+  let bridge = new AgentBridge(store, { url: 'http://agent.test', tokenFile, fetch: send, autoStart: false });
+  try {
+    await bridge.flush(); assert.equal(requests[0].events.length, 4);
+    assert.ok(requests[0].events.every((e: any) => e.provenance.endsWith(':backfill')));
+    await bridge.stop(); bridge = new AgentBridge(store, { url: 'http://agent.test', tokenFile, fetch: send, autoStart: false });
+    await bridge.flush(); assert.equal(requests.length, 1, 'restart does not duplicate backfill');
+    store.saveTranscript({ ...transcript(0, true), segmentId: 'new' }); await bridge.flush();
+    assert.equal(requests[1].events[0].provenance, 'scene-memory:speech');
+  } finally { await bridge.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('transactional bridge survives outage/reopen and preserves raw revisions and vision before memory commit', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'kawk-bridge-'));
   const tokenFile = join(dir, 'token'); await writeFile(tokenFile, 'x'.repeat(48));
@@ -45,6 +64,8 @@ test('transactional bridge survives outage/reopen and preserves raw revisions an
     assert.match(events[3].text, /Blue keyring/);
     assert.equal(store.getPacket('photo'), null, 'vision delivery is independent of memory writer');
     store.saveTranscript(transcript(1, true)); await bridge.flush(); assert.equal(requests.length, 2);
+    store.removePeople(['removed-gallery']); await bridge.flush();
+    assert.deepEqual(requests.at(-1).forgottenPeople, ['removed-gallery']);
   } finally { await bridge.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

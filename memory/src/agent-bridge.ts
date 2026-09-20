@@ -41,35 +41,51 @@ export function initializeAgentJournal(store: Store) {
       INSERT OR IGNORE INTO agent_outbox(kind,source_id,revision,body)
       VALUES('invalidate',OLD.id,0,'{}');
     END;
+    CREATE TRIGGER IF NOT EXISTS agent_person_removed AFTER INSERT ON removed_people BEGIN
+      INSERT OR IGNORE INTO agent_outbox(kind,source_id,revision,body) VALUES('forget-person',NEW.id,0,'{}');
+    END;
+    INSERT OR IGNORE INTO agent_outbox(kind,source_id,revision,body) SELECT 'forget-person',id,0,'{}' FROM removed_people;
+    INSERT OR IGNORE INTO agent_outbox(kind,source_id,revision,body)
+      SELECT 'history-transcript',session_id||'/'||stream_id||'/'||segment_id,revision,body FROM transcripts t
+      WHERE NOT EXISTS(SELECT 1 FROM agent_outbox a WHERE a.kind='transcript'
+        AND a.source_id=t.session_id||'/'||t.stream_id||'/'||t.segment_id AND a.revision=t.revision);
+    INSERT OR IGNORE INTO agent_outbox(kind,source_id,revision,body)
+      SELECT 'history-faces',id,0,body FROM captures c WHERE NOT EXISTS(
+        SELECT 1 FROM agent_outbox a WHERE a.kind='faces' AND a.source_id=c.id) ORDER BY captured_at;
+    INSERT OR IGNORE INTO agent_outbox(kind,source_id,revision,body)
+      SELECT 'history-vision',id,0,body FROM captures c WHERE json_extract(body,'$.vision') IS NOT NULL
+        AND NOT EXISTS(SELECT 1 FROM agent_outbox a WHERE a.kind='vision' AND a.source_id=c.id) ORDER BY captured_at;
   `);
 }
 
 export function wireEvent(row: Row) {
   const value = JSON.parse(row.body);
+  const history = row.kind.startsWith('history-');
+  const kind = history ? row.kind.slice(8) : row.kind;
   if (row.kind === 'event') return value;
-  if (row.kind === 'invalidate') return null;
-  if (row.kind === 'transcript') {
+  if (row.kind === 'invalidate' || row.kind === 'forget-person') return null;
+  if (kind === 'transcript') {
     const t = value as Transcript;
     if (!t.text.trim()) return null;
     return { id: eventId('speech', row.source_id), revision: t.revision,
       deviceId: `memory-${t.sessionId}`, streamId: eventId('stream', t.streamId), kind: 'transcript',
       final: t.isFinal, sourceStart: t.startAt, sourceEnd: t.endAt, text: t.text,
-      confidence: 0.8, speakerId: null, personIds: [], provenance: 'scene-memory:speech',
+      confidence: 0.8, speakerId: null, personIds: [], provenance: `scene-memory:speech${history ? ':backfill' : ''}`,
       timing: { method: 'clock-mapped', clockSessionId: eventId('clock', t.streamId), uncertaintyMs: t.timing === 'exact' ? 150 : 1500 },
       words: t.words.filter(w => w.text && w.text.length <= 300 && w.startAt >= t.startAt && w.endAt <= t.endAt).slice(0, 2000)
         .map(w => ({ text: w.text, sourceStart: w.startAt, sourceEnd: w.endAt })) };
   }
   const c = value as CaptureRecord;
   const people = c.faces.faces.filter(f => f.identityStatus === 'confirmed' && f.personId);
-  const content = row.kind === 'faces'
+  const content = kind === 'faces'
     ? { type: 'face-observation', captureId: c.id, visiblePeople: people.map(f => ({ personId: f.personId, name: f.name })), unknownFaces: c.faces.faces.filter(f => !f.personId).length, faceStatus: c.faces.status }
     : { type: 'camera-interpretation', captureId: c.id, frameUrl: `/api/frames/${c.id}`, vision: c.vision,
       visiblePeople: people.map(f => ({ personId: f.personId, name: f.name })), requestId: c.requestId ?? null };
-  return { id: eventId(row.kind, c.id), revision: row.revision, deviceId: `memory-${c.sessionId}`,
+  return { id: eventId(kind, c.id), revision: row.revision, deviceId: `memory-${c.sessionId}`,
     streamId: eventId('session', c.sessionId), kind: 'observation', final: true,
     sourceStart: c.capturedAt, sourceEnd: c.capturedAt, text: JSON.stringify(content).slice(0, 29000),
-    confidence: row.kind === 'faces' ? 0.85 : 0.7, speakerId: null,
-    personIds: people.map(f => f.personId).slice(0, 16), provenance: `scene-memory:${row.kind}`,
+    confidence: kind === 'faces' ? 0.85 : 0.7, speakerId: null,
+    personIds: people.map(f => f.personId).slice(0, 16), provenance: `scene-memory:${kind}${history ? ':backfill' : ''}`,
     timing: { method: 'capture', clockSessionId: eventId('session', c.sessionId), uncertaintyMs: 250 } };
 }
 
@@ -112,7 +128,8 @@ export class AgentBridge {
       rows = rows.filter(row => { bytes += Buffer.byteLength(JSON.stringify(wireEvent(row))); return bytes < 800000; });
       const events = rows.map(wireEvent).filter(Boolean);
       const invalidatedIds = rows.filter(r => r.kind === 'invalidate').map(r => eventId('note', r.source_id));
-      const response = await this.request('/v1/integration/events', { method: 'POST', body: JSON.stringify({ events, invalidatedIds }) });
+      const forgottenPeople = rows.filter(r => r.kind === 'forget-person').map(r => r.source_id);
+      const response = await this.request('/v1/integration/events', { method: 'POST', body: JSON.stringify({ events, invalidatedIds, forgottenPeople }) });
       if (!response.ok) throw new Error(`Agent bridge HTTP ${response.status}`);
       this.store.db.transaction(() => {
         const mark = this.store.db.prepare('UPDATE agent_outbox SET delivered=1 WHERE seq=?');
@@ -209,7 +226,10 @@ export class AgentBridge {
     app.get('/api/agent/capture/:id', (req, res) => res.json(this.cameraResult(req.params.id)));
     app.get('/api/agent/context', (_req, res) => res.json({ state: this.store.currentState(),
       people: this.store.entities().filter(e => e.kind === 'person' && !this.store.isPersonRemoved(e)),
-      captures: this.store.listCaptures(5).map(c => ({ id: c.id, capturedAt: c.capturedAt, status: c.status, faces: c.faces, vision: c.vision })) }));
+      captures: this.store.listCaptures(5)
+        .filter(c => c.capturedAt > (this.store.peopleResetBefore() ?? -1) &&
+          !c.faces.faces.some(f => f.personId && this.store.db.prepare('SELECT 1 FROM removed_people WHERE id=?').get(f.personId)))
+        .map(c => ({ id: c.id, capturedAt: c.capturedAt, status: c.status, faces: c.faces, vision: c.vision })) }));
     app.get('/api/agent/source/:id', (req, res) => res.json({ valid: Boolean(this.store.currentObservation(req.params.id)) }));
     app.use(async (req, res, next) => {
       const path = req.path === '/api/agent/events' ? '/v1/notifications/stream'

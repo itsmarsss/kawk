@@ -1,7 +1,8 @@
 # Memory testing client contract
 
 New TypeScript service on port 8082 (existing lab stays on 8081).
-Dark primitive UI; this page is the live memory-generation test, not an answering agent.
+Primitive capture, memory and agent interface. The Bun integration contract and
+current startup are described in [the merged demo guide](../docs/MERGED_DEMO.md).
 
 ## HTTP
 
@@ -22,9 +23,11 @@ Dark primitive UI; this page is the live memory-generation test, not an answerin
 - `GET /api/object-sightings?packetId=...` → object sighting decisions; packet filter optional.
   Each row retains its local ref, source packet/time, supported or candidate status,
   canonical entity ID or candidate IDs, reason, cited anchors and source evidence.
-- `POST /api/search` `{query,entityId?,from?,to?,limit?}` → `{results:[SearchHit]}`.
+- `POST /api/search` `{query,mode?,entityId?,from?,to?,limit?}` → `{results:[SearchHit]}`;
+  `mode` is `keyword` or `semantic`. The UI/agent use keyword by default; omitted
+  mode retains the original semantic API behavior.
 - `GET /api/frames/:captureId` → original JPEG.
-- `GET /api/gallery`, `WS /ws/faces?backend=local`, `WS /ws/speech?backend=baseten`
+- `GET /api/gallery`, `WS /ws/faces?backend=local`, `WS /ws/speech?backend=local`
   and `/static/*` are proxied to existing Python lab on8081 with corrected Origin.
   Existing enrollment test accessible through a link to http://localhost:8081/faces.
 

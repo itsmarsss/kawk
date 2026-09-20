@@ -143,16 +143,28 @@ export function serve(
 
       try {
         if (path === "/v1/integration/events" && request.method === "POST") {
-          const body = z.object({ events: z.array(EventSchema).max(64), invalidatedIds: z.array(Id).max(64) }).strict().parse(await request.json());
+          const body = z.object({ events: z.array(EventSchema).max(64), invalidatedIds: z.array(Id).max(64),
+            forgottenPeople: z.array(Id).max(64).default([]) }).strict().parse(await request.json());
           const results = harness.store.atomic(() => {
             for (const id of body.invalidatedIds) harness.deleteEvidence(owner, id);
+            for (const personId of body.forgottenPeople) {
+              harness.store.run("INSERT OR IGNORE INTO scene_removed_people VALUES (?,?)", owner, personId);
+              const affected = harness.store.all<{ id: string }>(`SELECT DISTINCT e.id FROM evidence e,
+                json_each(json_extract(e.payload,'$.personIds')) p WHERE e.owner=? AND e.deleted=0 AND p.value=?`, owner, personId);
+              for (const event of affected) harness.deleteEvidence(owner, event.id);
+            }
             return body.events.map(event => {
+              if (event.personIds.some(id => harness.store.one("SELECT 1 FROM scene_removed_people WHERE owner=? AND person_id=?", owner, id)))
+                return { accepted: false, removedPerson: true };
               // Replay journals all revisions but never wakes actions from stale backlog.
-              const live = Date.now() - event.sourceEnd < 60000;
+              const live = !event.provenance.endsWith(':backfill') && Date.now() - event.sourceEnd < 60000;
               const accepted = harness.ingest(owner, event, live);
-              if (event.provenance === "scene-memory:faces" && accepted.current && !accepted.duplicate) {
+              if (event.provenance.startsWith("scene-memory:faces") && accepted.current && !accepted.duplicate) {
                 const content = JSON.parse(event.text);
                 for (const person of content.visiblePeople ?? []) if (person.name && event.personIds.includes(person.personId)) {
+                  const clock = harness.store.one<{ source_at: number }>("SELECT source_at FROM scene_face_clock WHERE owner=? AND person_id=?", owner, person.personId);
+                  if (clock && clock.source_at > event.sourceEnd) continue;
+                  harness.store.run("INSERT INTO scene_face_clock VALUES (?,?,?) ON CONFLICT(owner,person_id) DO UPDATE SET source_at=excluded.source_at", owner, person.personId, event.sourceEnd);
                   const key = `gallery:${person.personId}`;
                   const old = harness.store.one<{ id: string }>("SELECT id FROM graph_nodes WHERE owner=? AND key=?", owner, key);
                   if (old && harness.graph.node(owner, old.id)?.label === person.name) continue;

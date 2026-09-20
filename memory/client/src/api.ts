@@ -1,6 +1,6 @@
 // Thin HTTP layer for the memory service on the same origin. GET-only helpers are safe on page load;
 // POST helpers are called only from explicit user actions or a running session.
-import type { CaptureInput, Transcript } from './types.ts';
+import type { CaptureInput, FaceEvidence, Transcript } from './types.ts';
 
 export interface ClientConfig { captureIntervalMs: number; transcriptWords: number; perceptionUrl?: string; provider?: string; model?: string; writerModel?: string; speechBackend?: string; speechNotice?: string }
 export interface SessionInfo { id: string; startedAt: number }
@@ -69,7 +69,7 @@ export interface EntityDetail { entity: Entity; observations: Observation[]; enc
 
 // ---- agent bridge (same-origin; no tokens in the browser). Bounded timeouts; the command poll is short so a
 // stalled endpoint cannot hold the single in-flight slot for long. ----
-export const AGENT_TIMEOUTS = { status: 5000, ask: 15000, list: 8000, ack: 8000, cancel: 8000, commands: 3000, claim: 5000, result: 8000 } as const;
+export const AGENT_TIMEOUTS = { status: 5000, ask: 15000, list: 8000, ack: 8000, cancel: 8000, commands: 3000, claim: 5000, result: 8000, faces: 4000 } as const;
 export interface AgentStatus { connected: boolean; bridge?: { pending?: number; lastError?: string | null }; agent?: { running?: boolean; activeTurns?: number; lastError?: string | null } }
 export interface AgentNotificationRaw { id: string; taskId?: string | null; text: string; createdAt?: number; refs?: unknown; [k: string]: unknown }
 export interface AgentTask { id: string; status: string; goal?: string | null; result?: unknown; createdAt?: number; updatedAt?: number; [k: string]: unknown }
@@ -84,6 +84,8 @@ export const agentApi = {
   commands: (sessionId: string) => getJsonTimeout<{ commands: AgentCommandRaw[] }>(`/api/agent/commands?${new URLSearchParams({ sessionId }).toString()}`, AGENT_TIMEOUTS.commands),
   claim: (id: string, sessionId: string) => postJson<{ claimed: boolean }>(`/api/agent/commands/${encodeURIComponent(id)}/claim`, { sessionId }, AGENT_TIMEOUTS.claim),
   result: (id: string, body: { sessionId: string; captureId?: string; error?: string }) => postJson<unknown>(`/api/agent/commands/${encodeURIComponent(id)}/result`, body, AGENT_TIMEOUTS.result),
+  /** Live regular face results (identity-set changes + ≤1/3 s heartbeat). Short timeout: the server rejects evidence older than 5 s anyway. */
+  faces: (body: { sessionId: string; evidence: FaceEvidence }) => postJson<{ accepted?: boolean }>('/api/agent/faces', body, AGENT_TIMEOUTS.faces),
   eventsUrl: '/api/agent/events',
 };
 async function getJsonTimeout<T>(url: string, timeoutMs: number): Promise<T> {

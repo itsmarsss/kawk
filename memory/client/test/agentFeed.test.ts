@@ -92,8 +92,12 @@ test('refs become links only for same-origin paths; artifact ids map to the prox
   assert.deepEqual(refView('/v1/artifacts/abc'), { label: '/v1/artifacts/abc', href: '/v1/artifacts/abc' });
   assert.deepEqual(refView('https://evil.example/x'), { label: 'https://evil.example/x', href: null });
   assert.deepEqual(refView('//evil.example/x'), { label: '//evil.example/x', href: null });
-  assert.deepEqual(refView({ artifactId: 'a b' }), { label: 'artifact a b', href: '/v1/artifacts/a%20b' });
-  assert.deepEqual(refView({ type: 'artifact', id: 'z', label: 'screenshot' }), { label: 'screenshot', href: '/v1/artifacts/z' });
+  assert.deepEqual(refView({ artifactId: 'a b' }), { label: 'artifact a b', href: null }, 'no valid proxy path → text, not an invented link');
+  assert.deepEqual(refView({ artifactId: '3f2a-0b' }), { label: 'artifact 3f2a-0b', href: '/v1/artifacts/3f2a-0b' });
+  assert.deepEqual(refView({ type: 'artifact', id: 'ABC', label: 'screenshot' }), { label: 'screenshot', href: null }, 'uppercase ids are not proxied');
+  assert.deepEqual(refView({ type: 'artifact', id: 'e1', label: 'screenshot' }), { label: 'screenshot', href: '/v1/artifacts/e1' });
+  assert.deepEqual(refView({ eventId: 'evt-9', revision: 2 }), { label: 'evidence event evt-9 r2', href: null }, 'bridge evidence refs are plain text');
+  assert.deepEqual(refView({ eventId: 'evt-9' }), { label: 'evidence event evt-9', href: null });
   assert.deepEqual(refView({ captureId: 'cap1' }), { label: 'source image cap1', href: '/api/frames/cap1' });
   assert.deepEqual(refView({ type: 'memory', id: 'm1' }), { label: 'memory m1', href: null });
   assert.deepEqual(refView({ url: 'http://x/y' }), { label: '{"url":"http://x/y"}', href: null });
@@ -102,6 +106,9 @@ test('refs become links only for same-origin paths; artifact ids map to the prox
 test('task and connection helpers', () => {
   assert.equal(isActiveTask('running'), true); assert.equal(isActiveTask('queued'), true);
   assert.equal(isActiveTask('done'), false); assert.equal(isActiveTask('Cancelled'), false); assert.equal(isActiveTask(undefined), false);
+  assert.equal(isActiveTask('abstained'), false, 'Jev abstained: finished, no Cancel');
+  assert.equal(isActiveTask('superseded'), false, 'superseded by a newer task: finished, no Cancel');
+  assert.equal(isActiveTask('Superseded'), false);
   assert.equal(taskResultText({ summary: 'found it' }), 'found it'); assert.equal(taskResultText(null), null); assert.equal(taskResultText('x'), 'x');
   const open: StreamState = { phase: 'open', attempt: 0, connections: 1, lastEventAt: null, lastError: null };
   assert.deepEqual(describeAgentConnection({ connected: true, bridge: { pending: 0, lastError: null }, agent: { running: true, activeTurns: 1, lastError: null } }, null, open),

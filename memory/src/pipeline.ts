@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile, appendFile, statfs } from 'node:fs/promises';
+import { mkdir, appendFile, statfs } from 'node:fs/promises';
+import writeFileAtomic from 'write-file-atomic';
 import { join } from 'node:path';
 import { CaptureInputSchema, TranscriptSchema, VisionSchema, MemoryDeltaSchema, MemoryBatchSchema,
   transcriptKey, type CaptureRecord, type Embedder, type Interpreter, type Packet, type MemoryContext } from './contracts.js';
@@ -102,7 +103,9 @@ export class MemoryPipeline {
     if (disk.bavail * disk.bsize < 256 * 1024 * 1024 + bytes.length)
       throw new Error('Insufficient disk space; capture was not accepted');
     const imagePath = join(frameDir, digest + '.jpg');
-    await writeFile(imagePath, bytes, { mode: 0o600 });
+    // Repeated identical camera frames share a hash/path. Never truncate that
+    // existing image while another vision worker is reading it.
+    await writeFileAtomic(imagePath, bytes, { mode: 0o600 });
     const { jpegBase64: _, ...metadata } = input;
     const capture: CaptureRecord = { ...metadata, imagePath, sha256: digest, receivedAt: this.now(),
       status: 'queued', error: null, vision: null };
@@ -239,14 +242,18 @@ export class MemoryPipeline {
     try {
       const packets = captures.map(c => this.packet(c));
       const contextGeneration = this.contextInvalidationGeneration;
+      const contextStarted = this.now();
       const context = await this.context(packets);
+      this.record(captures[0].id, 'memory_context', this.now() - contextStarted);
       if (contextGeneration !== this.contextInvalidationGeneration) {
         this.requeue(captures); return;
       }
+      const modelStarted = this.now();
       const batch = packets.length > 1 && this.model.updateBatch
         ? MemoryBatchSchema.parse(await this.model.updateBatch(packets, context))
         : { updates: [{ packetId: packets[0].id, packetVersion: packets[0].version, reuse: [],
           delta: MemoryDeltaSchema.parse(await this.model.update(packets[0], context)) }] };
+      this.record(captures[0].id, 'memory_model', this.now() - modelStarted);
       // An ordinary final can arrive while the model is producing an answer. Never
       // commit stale state/event assertions just because they did not cite a fact.
       if (contextGeneration !== this.contextInvalidationGeneration ||
@@ -254,7 +261,9 @@ export class MemoryPipeline {
         this.requeue(captures);
         return;
       }
+      const commitStarted = this.now();
       this.store.commitBatch(packets, batch);
+      this.record(captures[0].id, 'memory_commit', this.now() - commitStarted);
       for (const c of captures) {
         this.dirty.delete(c.id);
         this.record(c.id, 'capture_to_memory', this.now() - c.capturedAt);

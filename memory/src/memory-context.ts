@@ -1,5 +1,6 @@
 import { transcriptKey, type Embedder, type Entity, type MemoryContext, type Packet } from './contracts.js';
 import { Store } from './store.js';
+import { setImmediate as yieldToRequests } from 'node:timers/promises';
 
 /** Select useful context without changing, shortening or deleting persistent evidence. */
 export async function buildMemoryContext(store: Store, embedder: Embedder, packets: Packet[],
@@ -30,7 +31,12 @@ export async function buildMemoryContext(store: Store, embedder: Embedder, packe
     const vectors = queries.length ? await embedder.embed(queries) : [];
     if (vectors.length !== queries.length) throw new Error('Context embedding count mismatch');
     const related = new Map<string, MemoryContext['related'][number]>();
-    for (const vector of vectors) for (const note of store.search(vector, { limit: 3 })) related.set(note.id, note);
+    for (const vector of vectors) {
+      for (const note of store.search(vector, { limit: 3 })) related.set(note.id, note);
+      // SQLite scoring is synchronous. Let camera uploads, speech sockets and agent
+      // commands run between searches instead of blocking them for a whole batch.
+      await yieldToRequests();
+    }
     context.related = [...related.values()];
     for (const note of context.related) for (const id of [...note.entityIds, ...(note.candidateEntityIds ?? [])]) {
       // Preserve exact face metadata from the incoming image rather than replacing

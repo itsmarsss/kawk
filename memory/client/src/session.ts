@@ -16,6 +16,7 @@ import { IntroductionForwarder, idleIntroduction, type EnrollmentReply, type Int
 import { HISTORICAL_DEFAULT_SPEECH_BACKEND, type SpeechBackend } from './speechBackend.ts';
 import { SequenceAllocator } from './sequence.ts';
 import { CommandPoller, type CommandTransport, type InterruptState } from './agentCommands.ts';
+import { LiveFaceForwarder, type LiveFaceState, type LiveFaceTransport } from './liveFaces.ts';
 
 export type RunPhase = 'idle' | 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
 export interface LiveFaces { evidence: FaceEvidence; receivedAt: number; rttMs: number }
@@ -37,6 +38,8 @@ export interface RunSnapshot {
   finalCapture: FinalCaptureState;
   /** Agent capture interrupts: command polling health and the current claim/capture/report stage. */
   interrupt: InterruptState | null;
+  /** Live face forwarding to the agent bridge (identity-set changes + heartbeat); null when disabled. */
+  liveFaces: LiveFaceState | null;
   errors: RunErrors[];
 }
 /** Stop-time snapshot lifecycle. 'accepted' means HTTP 202 only, not that memory was committed. */
@@ -50,6 +53,8 @@ export interface RunDeps {
   /** Agent command transport (GET commands / claim / result). Omit to disable interrupt polling. */
   commands?: CommandTransport | null;
   commandIntervalMs?: number;
+  /** POST /api/agent/faces transport for live regular face results. Omit to disable forwarding. */
+  liveFaces?: LiveFaceTransport | null;
   /** Test seam: fake getUserMedia/canvas. Browser defaults when omitted. */
   mediaDeps?: MediaDeps;
 }
@@ -108,6 +113,8 @@ export class Run {
   private interrupt: InterruptState | null = null;
   private interruptCaptures = new Map<string, Promise<string>>();
   private interruptCount = 0;
+  private liveFaces: LiveFaceForwarder | null = null;
+  private liveFaceState: LiveFaceState | null = null;
 
   constructor(private readonly deps: RunDeps) {
     this.clock = deps.clock ?? { now: () => Date.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
@@ -120,7 +127,7 @@ export class Run {
       clock: this.clock, maxQueue: 2, responseTimeoutMs: 4000, maxQueueWaitMs: 6000,
       events: {
         send: (jpeg, epoch) => this.faceLink.send(jpeg, epoch),
-        onRegularResult: (r) => { this.face.lastRttMs = r.rttMs; this.face.lastServerMs = r.timings?.server_total ?? null; this.deps.onLiveFaces({ evidence: r.evidence, receivedAt: this.clock.now(), rttMs: r.rttMs }); this.scheduleUpdate(); },
+        onRegularResult: (r) => { this.face.lastRttMs = r.rttMs; this.face.lastServerMs = r.timings?.server_total ?? null; this.deps.onLiveFaces({ evidence: r.evidence, receivedAt: this.clock.now(), rttMs: r.rttMs }); this.liveFaces?.offer(r.evidence); this.scheduleUpdate(); },
         onScheduledResult: (r) => { this.onScheduledResult(r); this.scheduledWaiters.get(r.photo.id)?.(); },
         onGap: (g) => { this.counts.faceGaps += 1; this.error(`face gap for ${g.photoId}: ${g.reason}`); },
         onStaleReply: (s) => { this.error(`stale face reply ignored: ${s.reason}`); },
@@ -151,6 +158,10 @@ export class Run {
     try { session = await api.createSession(); } catch (e) { this.fail(`POST /api/sessions failed: ${msg(e)}`); return; }
     if (this.stopped) return; // Stop pressed during the request: no media is acquired for a dead run
     this.sessionId = session.id; this.startedAt = session.startedAt;
+    if (this.deps.liveFaces) {
+      this.liveFaces = new LiveFaceForwarder({ sessionId: session.id, clock: this.clock, send: this.deps.liveFaces, onState: (s) => { this.liveFaceState = s; this.scheduleUpdate(); } });
+      this.liveFaces.start();
+    }
     this.update();
     const media = await this.media.start(opts);
     if (this.stopped) { this.media.stop(); return; }
@@ -267,6 +278,7 @@ export class Run {
       this.stopped = true; this.reason = reason;
       this.phase = 'stopping'; this.update();
       this.commands?.stop(reason); // no further claims or interrupt photos for this session
+      this.liveFaces?.stop(reason); // no live face evidence for a dead session; an in-flight reply is ignored
       this.ticker.stop();
       if (this.faceLoop !== null) clearInterval(this.faceLoop as ReturnType<typeof setInterval>);
       this.faceLoop = null;
@@ -304,6 +316,7 @@ export class Run {
     this.deps.onLiveFaces(null);
     this.setIntroduction({ ...idleIntroduction(`${reason}: labels discarded; face connection recycling`), sent: this.introduction.sent, skipped: this.introduction.skipped });
     this.faceLink.resetConnection(reason);
+    this.liveFaces?.reset(reason); // the next stable identity set is re-sent on the fresh connection
     this.update();
   }
 
@@ -527,6 +540,7 @@ export class Run {
       micLevel: this.micLevel,
       finalCapture: this.finalCapture,
       interrupt: this.interrupt,
+      liveFaces: this.liveFaceState,
       errors: [...this.errors],
     };
   }

@@ -88,6 +88,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, owner TEXT NOT NULL, task_id TEXT NOT NULL, created_at INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS transcript_exports(owner TEXT NOT NULL, hour INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1, exported_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(owner,hour));
       CREATE TABLE IF NOT EXISTS graph_nodes(owner TEXT NOT NULL, id TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, gallery_id TEXT, PRIMARY KEY(owner,id), UNIQUE(owner,key));
+      CREATE TABLE IF NOT EXISTS scene_face_clock(owner TEXT NOT NULL, person_id TEXT NOT NULL, source_at INTEGER NOT NULL, PRIMARY KEY(owner,person_id));
+      CREATE TABLE IF NOT EXISTS scene_removed_people(owner TEXT NOT NULL, person_id TEXT NOT NULL, PRIMARY KEY(owner,person_id));
       CREATE TABLE IF NOT EXISTS graph_links(owner TEXT NOT NULL, memory_id TEXT PRIMARY KEY, subject TEXT NOT NULL, target TEXT);
       CREATE INDEX IF NOT EXISTS graph_subject ON graph_links(owner,subject);
       CREATE INDEX IF NOT EXISTS graph_target ON graph_links(owner,target);

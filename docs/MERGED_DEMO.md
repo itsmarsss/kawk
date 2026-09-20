@@ -75,7 +75,7 @@ transport remains a separate integration step.
 
 ## Checkpoint verification
 
-Backend checks: **443 Python, 81 agent and 283 memory tests passed**. This includes
+Backend checks: **443 Python, 81 agent and 284 memory tests passed**. This includes
 outbox outage/restart and rollback behavior, transcript revisions, same gallery IDs,
 fresh-camera claim/session/expiry checks, stale-source rejection, and recovery from
 invalid memory batch reuse without rerunning image inference. UI checks are recorded
@@ -92,7 +92,9 @@ These are controlled tests, not evidence that iPhone capture or hardware is read
 At integration time the older live memory process had about six minutes of backlog.
 Source-time alignment and fresh-frame priority prevent treating an old scene as
 current; they do not eliminate slow vision/writer calls. Existing batch failures
-now retry individually. Full merged live latency still needs measurement.
+now retry individually. The [merged live-provider report](MERGED_E2E_VALIDATION.md)
+records12 passing controlled checks, local perception probes and measured latency;
+iPhone/hardware testing remains separate.
 
 Next live acceptance cases: where are my keys; summarize today's class; recall
 William's conversation; enroll/rename a person; remind me about Vitamin B when

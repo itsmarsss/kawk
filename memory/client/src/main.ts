@@ -61,7 +61,7 @@ function renderSpeechNote(): void {
 ui.speechBackend.addEventListener('change', renderSpeechNote);
 
 // ---- status region: fixed rows, values replaced in place (no layout jump) ------------------------
-const STATUS_ROWS = ['Session', 'Camera', 'Microphone', 'Face socket', 'Speech socket', 'Cadence', 'Photos', 'Captures', 'Agent capture', 'Transcripts', 'Latency', 'Stop snapshot'] as const;
+const STATUS_ROWS = ['Session', 'Camera', 'Microphone', 'Face socket', 'Speech socket', 'Cadence', 'Photos', 'Captures', 'Agent capture', 'Agent faces', 'Transcripts', 'Latency', 'Stop snapshot'] as const;
 const statusValues = new Map<string, HTMLElement>();
 for (const label of STATUS_ROWS) {
   const value = el('div', { class: 'v' }, '—');
@@ -84,7 +84,8 @@ function renderSnapshot(s: RunSnapshot | null): void {
   ui.camera.disabled = running; ui.mic.disabled = running; ui.speechBackend.disabled = running;
   renderTranscriptNote(); renderIntroduction(s); renderSpeechNote();
   if (!s) {
-    for (const label of STATUS_ROWS) setRow(label, label === 'Session' ? 'idle — press Start' : '—');
+    for (const label of STATUS_ROWS) setRow(label, label === 'Session' ? 'idle — press Start' : label === 'Agent capture' ? 'polls GET /api/agent/commands every 400 ms while running; the agent can request one extra photo without moving the 5 s ticks'
+      : label === 'Agent faces' ? 'live face identities go to POST /api/agent/faces on stable changes (incl. unknown / no face) and as a ≤ 1-per-3 s heartbeat while running' : '—');
     setText(ui.errorsSummary, 'Errors (0)');
     return;
   }
@@ -99,6 +100,10 @@ function renderSnapshot(s: RunSnapshot | null): void {
   setRow('Cadence', `every ${s.ticks.intervalMs} ms from ${fmtTime(s.ticks.anchor)} · ticks ${s.ticks.fired} · skipped ${s.ticks.skipped} · last-${config.transcriptWords}-word window is server-owned`, s.ticks.skipped ? 'warn' : '');
   setRow('Photos', `drawn ${s.photos.drawn} (${s.photos.interrupts} for agent) · next sequence ${s.photos.nextSequence} · encoding ${s.photos.encoding} · awaiting face ${s.photos.awaitingFace} (queued ${s.photos.faceQueued}) · face ready ${s.photos.faceReady} · unavailable ${s.photos.faceUnavailable} · gaps ${s.photos.faceGaps} · queue rejected ${s.photos.queueRejected} · draw/encode failed ${s.photos.drawFailed}/${s.photos.encodeFailed}`,
     s.photos.faceGaps || s.photos.drawFailed || s.photos.encodeFailed ? 'warn' : '');
+  const lf = s.liveFaces;
+  setRow('Agent faces', !lf ? (s.phase === 'running' ? 'live face forwarding disabled' : 'forwards stable identity-set changes + ≤ 1-per-3 s heartbeat while running')
+    : `${lf.message} · known ${lf.identityKey ?? '—'} · sent ${lf.counts.sent} (changes ${lf.counts.changes}, heartbeats ${lf.counts.heartbeats}) · accepted ${lf.counts.accepted} · failed ${lf.counts.failed} · superseded ${lf.counts.superseded} · stale dropped ${lf.counts.staleDropped}${lf.lastSentAt ? ` · last ${fmtTime(lf.lastSentAt)}` : ''}${lf.lastError ? ` · last error: ${lf.lastError}` : ''}`,
+    !lf ? '' : lf.stage === 'failed' ? 'bad' : lf.stage === 'sent' ? 'ok' : lf.stage === 'sending' ? 'warn' : '');
   const it = s.interrupt;
   setRow('Agent capture', !it ? (s.phase === 'running' ? 'command polling disabled' : 'polls GET /api/agent/commands every 400 ms while running')
     : `${it.message} · polls ${it.counts.polls}${it.counts.pollErrors ? ` (errors ${it.counts.pollErrors})` : ''} · claimed ${it.counts.claimed} · captured ${it.counts.captured} · failed ${it.counts.failed} · not claimed ${it.counts.notClaimed} · expired ${it.counts.expired}${it.lastPollError ? ` · last poll error: ${it.lastPollError}` : ''}`,
@@ -202,6 +207,7 @@ async function start(): Promise<void> {
   const run = new Run({
     videoEl: ui.video, config,
     commands: { poll: (sid) => agentApi.commands(sid), claim: (id, sid) => agentApi.claim(id, sid), result: (id, body) => agentApi.result(id, body) },
+    liveFaces: (body) => agentApi.faces(body),
     onUpdate: (s) => { if (run === current) renderSnapshot(s); },
     onLiveFaces: (f) => { if (run === current) liveFaces = f; },
     onTranscript: (t) => { if (run === current) onTranscript(t); },

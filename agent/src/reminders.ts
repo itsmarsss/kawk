@@ -171,7 +171,8 @@ export class Reminders {
     // Late or uncertain visual results must not create a current encounter reminder.
     if (
       encounter &&
-      (encounter.provenance === "insightface-track" ||
+      (encounter.provenance.endsWith(":backfill") ||
+        encounter.provenance === "insightface-track" ||
         encounter.kind !== "observation" ||
         !encounter.final ||
         encounter.confidence < 0.8 ||

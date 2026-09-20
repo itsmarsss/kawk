@@ -11,13 +11,15 @@ test("scene bridge journals delayed history without replaying actions and import
     gate: { decide: async () => decision({ act: false, route: "observe" }) },
     model: model(() => call("finish", { text: "", refs: [], confidence: 1, notify: false })) });
   const server = serve(h, { port: 0, owner: "owner", token: "t".repeat(48) }); h.start();
-  const send = (events: unknown[], invalidatedIds: string[] = []) => fetch(server.url + "/v1/integration/events", {
-    method: "POST", headers: { Authorization: "Bearer " + "t".repeat(48), "Content-Type": "application/json" }, body: JSON.stringify({ events, invalidatedIds }),
+  const send = (events: unknown[], invalidatedIds: string[] = [], forgottenPeople: string[] = []) => fetch(server.url + "/v1/integration/events", {
+    method: "POST", headers: { Authorization: "Bearer " + "t".repeat(48), "Content-Type": "application/json" }, body: JSON.stringify({ events, invalidatedIds, forgottenPeople }),
   });
   try {
     const old = event("old", "Remind me in twenty seconds", { sourceStart: Date.now() - 120000, sourceEnd: Date.now() - 120000, provenance: "scene-memory:speech" });
     expect((await send([old])).status).toBe(202);
     expect(store.latest("owner", "old")?.text).toBe(old.text);
+    expect(store.all("SELECT * FROM gate_jobs")).toHaveLength(0);
+    await send([event("recent-backfill", "Remind me in twenty seconds", { provenance: "scene-memory:speech:backfill" })]);
     expect(store.all("SELECT * FROM gate_jobs")).toHaveLength(0);
     const face = event("face", JSON.stringify({ visiblePeople: [{ personId: "kenny-gallery", name: "Kenny" }] }),
       { kind: "observation", personIds: ["kenny-gallery"], provenance: "scene-memory:faces" });
@@ -27,6 +29,13 @@ test("scene bridge journals delayed history without replaying actions and import
     expect(graph.entities).toHaveLength(1); expect(graph.entities[0]?.galleryId).toBe("kenny-gallery");
     await until(() => store.all("SELECT * FROM gate_jobs WHERE state='done'").length === 1);
     expect(store.tasks("owner")).toHaveLength(0);
+    const staleFace = { ...face, id: "late-old-name", sourceStart: face.sourceStart - 1000, sourceEnd: face.sourceEnd - 1000,
+      text: JSON.stringify({ visiblePeople: [{ personId: "kenny-gallery", name: "Old name" }] }) };
+    await send([staleFace]); expect(h.graph.query("owner", { query: "Kenny" }).entities).toHaveLength(1);
+    await send([], [], ["kenny-gallery"]);
+    expect(h.graph.node("owner", graph.entities[0]!.id)).toBeNull();
+    await send([{ ...face, id: "late-deleted-face" }]);
+    expect(store.latest("owner", "late-deleted-face")).toBeNull();
     await send([], ["old"]); expect(store.latest("owner", "old")).toBeNull();
   } finally { await server.stop(); await h.stop(); store.close(); }
 });
