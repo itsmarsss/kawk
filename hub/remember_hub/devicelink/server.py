@@ -69,6 +69,14 @@ class DeviceSession:
             return time.time()
         return self.first_frame_wall + (ts_ms - self.first_device_ts) / 1000.0
 
+    def frame_lag_ms(self) -> float | None:
+        """Delivery lag of the newest frame vs the device's own clock — the
+        bufferbloat detector: growing lag = stale frames queuing in TCP/WiFi."""
+        if self.latest_frame is None:
+            return None
+        sent_at = self.device_ts_to_hub(self.latest_frame.ts_ms)
+        return max(0.0, (self.latest_frame.t_hub - sent_at) * 1000.0)
+
     def offer_display(self, action: DisplayAction) -> None:
         """Newest-wins: replace any queued action instead of ever backing up."""
         if self._outbox.full():

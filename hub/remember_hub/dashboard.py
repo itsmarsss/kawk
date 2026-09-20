@@ -32,7 +32,7 @@ from .display.compositor import Compositor
 
 log = logging.getLogger(__name__)
 
-_STREAM_FPS = 15.0
+_STREAM_FPS = 30.0  # poll rate of the newest-wins slot; must exceed device fps
 
 _PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>{name} — dashboard</title>
@@ -119,7 +119,8 @@ async function poll() {{
     const s = await (await fetch('/stats.json')).json();
     document.getElementById('devices').textContent = s.devices.map(d =>
       `${{d.id}} (${{d.cls}})  ${{d.fps.toFixed(1)}} fps  frames=${{d.frames_rx}}  ` +
-      `audio=${{d.audio_rx}}  ${{d.wh ? d.wh.join('x') : '-'}}  ${{d.kb}}KB`).join('\\n') || '(none connected)';
+      `audio=${{d.audio_rx}}  ${{d.wh ? d.wh.join('x') : '-'}}  ${{d.kb}}KB  ` +
+      `lag=${{d.lag_ms == null ? '-' : d.lag_ms + 'ms'}}`).join('\\n') || '(none connected)';
     const c = s.display;
     document.getElementById('card').innerHTML =
       c.template === 'idle' ? '<i>idle</i>' :
@@ -289,6 +290,7 @@ class Dashboard:
                     fps = (session.frames_rx - prev_n) / (now - prev_t)
                     self._fps[device_id] = (now, session.frames_rx, fps)
             lf = session.latest_frame
+            lag = session.frame_lag_ms()
             devices.append(
                 {
                     "id": device_id,
@@ -298,6 +300,7 @@ class Dashboard:
                     "fps": round(max(fps, 0.0), 1),
                     "wh": list(lf.wh) if lf else None,
                     "kb": round(len(lf.jpeg) / 1024) if lf else 0,
+                    "lag_ms": round(lag) if lag is not None else None,
                 }
             )
         template, age_s = self.compositor.state()
