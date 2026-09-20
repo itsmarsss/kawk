@@ -119,6 +119,12 @@ inspiration is allowed; **do not copy its implementation**. See
   Distinguish generated, delivered and acknowledged notifications.
 - The integrated page auto-connects through its server proxy. No token-paste flow;
   keep credentials out of browser bundles, logs and git.
+- Merged Web Push uses the existing `web-push` backend via `/api/agent/push/*`.
+  Prepare the key/registration before Enable is clickable; Safari's `subscribe()`
+  must execute directly from that click. Every push calls `showNotification`,
+  reusing its tag with `renotify:false`; do not silently suppress duplicate pushes.
+  SSE receipt alone is not an acknowledgement. A push-service `sent` count is not
+  proof of OS display. Long answers use a bounded preview; full text stays durable.
 
 ## UI authoring rule
 
@@ -206,13 +212,20 @@ image interpretation, browser file work and cancellation with controlled inputs.
 Local speech used generated PCM; local face verification used an existing recorded
 gallery image without changing the gallery. Neither proves worn-device accuracy.
 
+Current checks: **443 Python, 84 agent, 293 memory and 107 client tests**;
+**52 isolated browser checks** and the **12/12 real-provider fixture replay**.
+The merged push route also sent a test accepted by the existing browser's real
+FCM endpoint. That verifies the push service, not an observed device banner.
+
 The earlier scene-writer bottlenecks have been removed: a copied 37,290-observation
 store's attribute rebuild fell from 3.79 s to 10 ms; indexed lexical context took
 306 ms. The live queue is draining under continued capture, but accumulated work
-is not discarded and provider latency still matters. Source-backed agent answers
-can bypass the ordered writer. Baseten
-is unavailable for this demo. iPhone device selection, venue audio/face accuracy,
-physical glasses/display transport and iOS background push still need live-device
-verification. The merged service worker has no push handler; standalone agent Web
-Push code is not merged-device proof. Do not present targets or fixture results as
-hardware or always-on background success.
+is not discarded and provider latency still matters. Rejected batch outputs and
+transactional batch validation failures fall back to individually checked updates
+without repeating image inference. Historical failed interpretations retain their
+raw sources and remain failed until an actual retry succeeds; do not hide them in
+queue metrics. Source-backed agent answers can bypass the ordered writer.
+Baseten is unavailable for this demo. iPhone device selection, venue audio/face
+accuracy, physical glasses/display transport and iOS background push still need
+live-device verification. The merged worker now handles push and notification
+clicks; do not present mocked browser or gateway acceptance as hardware/OS success.

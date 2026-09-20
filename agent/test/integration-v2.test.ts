@@ -345,3 +345,19 @@ test("free-form reminder abstention is reconciled without stopping the scheduler
     s.close();
   }
 });
+
+test("large Unicode answers use a bounded push preview while retaining the full journal answer", async () => {
+  const store = new Store(":memory:"); let payload = "";
+  const push = new PushDelivery(store, { publicKey: "test", privateKey: "test" }, async (_sub, body) => { payload = body; });
+  try {
+    const e = event("long-answer", "Explain my notes"); store.ingest("o", e, false);
+    const t = store.createTask({ owner: "o", goal: e.text, refs: [refOf(e)], capabilities: [] });
+    const text = "🦜\n\u0001".repeat(1000);
+    store.notify(t, text, [refOf(e)], 60000);
+    push.subscribe("o", { endpoint: "https://push.example/unicode", keys: { auth: "a".repeat(16), p256dh: "b".repeat(32) } });
+    await push.flush();
+    expect(Buffer.byteLength(payload)).toBeLessThan(3072);
+    expect(JSON.parse(payload).body.endsWith("…")).toBe(true);
+    expect(store.notifications("o")[0]!.text).toBe(text);
+  } finally { store.close(); }
+});

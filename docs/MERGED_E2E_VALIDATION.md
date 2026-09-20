@@ -123,3 +123,15 @@ store and WSS-to-local-perception proxy. Push tests verify same-origin server-si
 authentication, subscription/delete bodies, test delivery, owner-scoped counters,
 retry/deduplication and expired endpoint removal. Browser/OS receipt is a separate
 check; these transport fixtures do not establish Apple background delivery.
+
+The merged UI now passes **107 client tests and 52 isolated browser checks**.
+Its worker handles real browser push events injected through CDP; PushManager
+registration is mocked in that browser test. The test covers synchronous
+gesture-bound subscription, tag reuse without renotification, failed-display
+handling, same-origin notification opening, hidden-tab acknowledgement behavior,
+Start/Stop overlap, reconnects and absence of private API/media cache entries.
+
+A separate test through the running merged server reached its existing real
+**FCM** subscription: sent deliveries increased from **1 to 2**, pending/failed
+remained zero. This is a real push-service acceptance, not a verified device
+banner. Private receipt: `.context/merged-demo/live-push-test.json` in the space.

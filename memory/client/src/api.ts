@@ -28,6 +28,11 @@ async function deleteJson<T>(url: string, timeoutMs: number): Promise<T> {
   if (!res.ok) throw new Error(`DELETE ${url} → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return (await res.json()) as T;
 }
+async function deleteJsonBody<T>(url: string, body: unknown, timeoutMs: number): Promise<T> {
+  const res = await fetchWithTimeout(url, { method: 'DELETE', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) }, timeoutMs);
+  if (!res.ok) throw new Error(`DELETE ${url} → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  return (await res.json()) as T;
+}
 async function postRaw(url: string, body: unknown, timeoutMs: number): Promise<HttpResult> {
   const res = await fetchWithTimeout(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, timeoutMs);
   const text = await res.text();
@@ -63,13 +68,17 @@ export interface Packet { id: string; version: number; sessionId: string; sequen
 export interface Dashboard {
   state?: CurrentState | null; entities?: Entity[]; observations?: Observation[]; events?: unknown[]; encounters?: unknown[];
   captures?: CaptureRecord[]; stats?: Record<string, unknown>;
-  pipeline?: { running?: boolean; queue?: number; observing?: number | string[]; reducing?: string | number | null; indexing?: boolean | number; lastError?: string | null; latencies?: { id?: string; stage: string; ms: number; at?: number }[] | Record<string, number> };
+  pipeline?: { running?: boolean; queue?: number; observing?: number | string[]; reducing?: string | number | null; indexing?: boolean | number; lastError?: string | null; latencies?: { id?: string; stage: string; ms: number; at?: number }[] | Record<string, number>;
+    /** Capture outcome counters over the whole store: failed rows stay failed until repaired; raw sources remain saved. */
+    failed?: number; committed?: number; accepted?: number;
+    /** Age of the newest derived memory (current state) at snapshot time; null when nothing has been derived yet. */
+    latestMemoryAgeMs?: number | null; oldestPendingMs?: number };
 }
 export interface EntityDetail { entity: Entity; observations: Observation[]; encounters: unknown[]; events: unknown[] }
 
 // ---- agent bridge (same-origin; no tokens in the browser). Bounded timeouts; the command poll is short so a
 // stalled endpoint cannot hold the single in-flight slot for long. ----
-export const AGENT_TIMEOUTS = { status: 5000, ask: 15000, list: 8000, ack: 8000, cancel: 8000, commands: 3000, claim: 5000, result: 8000, faces: 4000 } as const;
+export const AGENT_TIMEOUTS = { status: 5000, ask: 15000, list: 8000, ack: 8000, cancel: 8000, commands: 3000, claim: 5000, result: 8000, faces: 4000, push: 8000 } as const;
 export interface AgentStatus { connected: boolean; bridge?: { pending?: number; lastError?: string | null }; agent?: { running?: boolean; activeTurns?: number; lastError?: string | null } }
 export interface AgentNotificationRaw { id: string; taskId?: string | null; text: string; createdAt?: number; refs?: unknown; [k: string]: unknown }
 export interface AgentTask { id: string; status: string; goal?: string | null; result?: unknown; createdAt?: number; updatedAt?: number; [k: string]: unknown }
@@ -87,6 +96,13 @@ export const agentApi = {
   /** Live regular face results (identity-set changes + ≤1/3 s heartbeat). Short timeout: the server rejects evidence older than 5 s anyway. */
   faces: (body: { sessionId: string; evidence: FaceEvidence }) => postJson<{ accepted?: boolean }>('/api/agent/faces', body, AGENT_TIMEOUTS.faces),
   eventsUrl: '/api/agent/events',
+  // Web Push (same-origin proxy to the agent's /v1/push/*; no token in the browser). Subscribe/unsubscribe/test are user actions;
+  // `pushKey`/`pushStatus` are GETs; `pushSubscribe` is also used to re-sync an existing browser subscription on load (idempotent upsert).
+  pushKey: () => getJsonTimeout<{ publicKey: string }>('/api/agent/push/key', AGENT_TIMEOUTS.push),
+  pushSubscribe: (subscription: unknown) => postJson<{ subscribed?: boolean }>('/api/agent/push/subscriptions', subscription, AGENT_TIMEOUTS.push),
+  pushUnsubscribe: (endpoint: string) => deleteJsonBody<{ subscribed?: boolean }>('/api/agent/push/subscriptions', { endpoint }, AGENT_TIMEOUTS.push),
+  pushStatus: () => getJsonTimeout<{ subscriptions: number; pending: number; sent: number; failed: number }>('/api/agent/push/status', AGENT_TIMEOUTS.push),
+  pushTest: () => postJson<{ id?: string; [k: string]: unknown }>('/api/agent/push/test', {}, AGENT_TIMEOUTS.push),
 };
 async function getJsonTimeout<T>(url: string, timeoutMs: number): Promise<T> {
   const res = await fetchWithTimeout(url, { headers: { accept: 'application/json' } }, timeoutMs);

@@ -71,6 +71,45 @@ test('notifications are rendered once across initial GET, SSE delivery and a rec
   assert.equal(h.states.at(-1)!.phase, 'closed');
 });
 
+test('wake(): a stream dropped while the tab was hidden reopens immediately; a healthy stream is left alone', () => {
+  const h = streamHarness();
+  h.stream.start(); const es1 = h.es(); es1.serverOpen();
+  h.stream.wake();
+  assert.equal(FakeEventSource.instances.length, 1, 'open stream untouched');
+  es1.serverDrop();
+  assert.equal(h.states.at(-1)!.phase, 'reconnecting');
+  assert.equal(h.clock.pending, 1, 'backoff timer armed');
+  h.stream.wake(); // tab became visible: do not wait out the backoff
+  assert.equal(FakeEventSource.instances.length, 2);
+  assert.equal(h.clock.pending, 0, 'backoff timer cancelled, not doubled');
+  const es2 = h.es(); es2.serverOpen();
+  assert.equal(h.states.at(-1)!.connections, 2);
+  h.clock.advance(60_000);
+  assert.equal(FakeEventSource.instances.length, 2, 'no ghost reopen from the cancelled timer');
+  // browser reports CLOSED without ever firing onerror (background eviction): wake still recovers
+  es2.readyState = 2;
+  h.stream.wake();
+  assert.equal(FakeEventSource.instances.length, 3); assert.equal(es2.closed, true);
+  h.stream.stop();
+  h.stream.wake();
+  assert.equal(FakeEventSource.instances.length, 3, 'stopped stream never reopens');
+});
+
+test('push markers and ack reasons live on the ledger; last-event age is shown when a clock is given', () => {
+  const ledger = new NotificationLedger(10);
+  assert.equal(ledger.markPush('unknown', 5), false);
+  ledger.add(parseNotification(note('n1', 1000), 2000)!);
+  assert.equal(ledger.markPush('n1', 3000), true); assert.equal(ledger.get('n1')!.pushAt, 3000);
+  ledger.markPush('n1', 9000); assert.equal(ledger.get('n1')!.pushAt, 3000, 'first push time kept');
+  ledger.ack('n1', 'opened from notification');
+  assert.equal(ledger.get('n1')!.acked, true); assert.equal(ledger.get('n1')!.ackReason, 'opened from notification');
+  const st: StreamState = { phase: 'open', attempt: 0, connections: 1, lastEventAt: 10_000, lastError: null };
+  assert.match(describeAgentConnection({ connected: true }, null, st, 22_400).text, /live updates on · last event 12 s ago$/);
+  assert.doesNotMatch(describeAgentConnection({ connected: true }, null, st).text, /last event/);
+  const rc: StreamState = { phase: 'reconnecting', attempt: 3, connections: 1, lastEventAt: null, lastError: 'stream closed' };
+  assert.match(describeAgentConnection({ connected: true }, null, rc, 1).text, /reconnecting \(attempt 3, stream closed\)/);
+});
+
 test('malformed events are reported, not rendered; ack state only flips after the caller confirms', () => {
   const h = streamHarness();
   h.stream.start(); h.es().serverOpen();

@@ -121,9 +121,13 @@ export class PushDelivery {
         if (!this.store.notifications(sub.owner).some(current => current.id === n.id) ||
             !this.store.one("SELECT id FROM push_subscriptions WHERE id=?", sub.id)) continue;
         try {
+          // A push is a preview. Full answers remain in the journal/SSE feed.
+          // 400 code points also bound worst-case JSON escaping below push limits.
+          const characters = Array.from(n.text);
+          const preview = characters.length > 400 ? characters.slice(0, 400).join('') + '…' : n.text;
           await this.send(
             JSON.parse(sub.payload),
-            JSON.stringify({ id: n.id, title: "KAWK", body: n.text, url: "/", expiresAt: n.expiresAt }),
+            JSON.stringify({ id: n.id, title: "KAWK", body: preview, url: "/", expiresAt: n.expiresAt }),
             {
               TTL: Math.max(1, Math.floor((n.expiresAt - this.store.now()) / 1000)),
               timeout: 5000,

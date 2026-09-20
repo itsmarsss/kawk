@@ -189,3 +189,163 @@ itself. The server's own default `mode` is `semantic`; the page always sends `mo
 - Agent notifications older than the 100 most recent are dropped client-side; tasks list shows at most 20.
 - The task `Cancel` button treats any status not in {done, completed, complete, succeeded, success, failed, error,
   cancelled, canceled, aborted, expired, rejected} as active; unknown statuses therefore show Cancel.
+
+## Web Push + reconnect/lifecycle pass (2026-09-20, ≈04:15–04:50)
+
+Author: Claude Code, model `claude-fable-5-1`. Scope: `memory/client/**`, `memory/public/**`, this file. Nothing in
+`memory/src`, `agent/src`, credentials, recordings, the gallery or running services was touched; nothing committed.
+Codex is adding the same-origin proxy routes this page calls (`/api/agent/push/key|subscriptions|status|test`); until
+they exist the page shows the proxy's 404/502 text in the push status line and never subscribes the browser.
+
+### What changed
+
+**Web Push (`push.ts`, `main.ts`, `index.html`, `sw.js`).** A “Notifications” block in the Agent section:
+- Support is classified before anything happens: secure context (HTTPS or localhost), service worker, `PushManager`,
+  `Notification`; on iPhone/iPad without `PushManager` the guidance says to Add to Home Screen first; a denied browser
+  permission gets site-settings (or iOS Settings) guidance. The Enable button is disabled when push cannot work here.
+- **Enable notifications** (a click, the only place permission is requested): `Notification.requestPermission()` →
+  `GET /api/agent/push/key` → `pushManager.subscribe({userVisibleOnly:true, applicationServerKey})` (an existing
+  subscription for a different key is dropped first, one for the same key is reused) → `POST
+  /api/agent/push/subscriptions` with `subscription.toJSON()`. If the agent refuses, the browser subscription is rolled
+  back so both sides stay consistent. A 503 from the key route reads “push is not configured on the agent”. No token
+  is pasted anywhere; the routes are same-origin.
+- **Disable notifications**: `subscription.unsubscribe()` then `DELETE /api/agent/push/subscriptions {endpoint}`;
+  partial failures are stated (“agent may still list this device…” / “browser kept its subscription…”).
+- **Send test push**: `POST /api/agent/push/test`; only the returned id is recorded (“nothing is assumed delivered”).
+- **Delivery counters**: `GET /api/agent/push/status` every 5 s while subscribed and after a test, labelled
+  `"sent" = accepted by the push service, not shown on a device`. **Clear status** resets text/errors only.
+- Page load calls `refresh()` only: it reads the state and, if the browser already holds a subscription, re-posts it
+  (idempotent upsert on the agent) so an agent restart does not silently lose the device. No prompt on load.
+- `public/sw.js` now handles `push`: JSON payload validated (`id` string ≤200, `title` ≤120, `body` ≤2000, control
+  characters stripped, `url` resolved and forced same-origin); one system notification per id (tag
+  `kawk-notification:<id>`, `renotify:false`, plus an in-memory id set) — a re-push never shows a second banner;
+  unreadable payloads show an honest generic banner (tag `…:unreadable`) instead of invented content; every open
+  same-origin window gets a `kawk-push` message (`foreground` = some window visible+focused, `duplicate`).
+  `notificationclick` closes the banner, then focuses an existing KAWK window and posts `kawk-notification-open` (no
+  `navigate()`, so a running capture is not reloaded away); with no window it `openWindow`s `/?notification=<id>` on
+  our origin only. `/sw.js` itself and all `/api/*`, `/ws/*`, `/v1/*`, `/static/*` remain uncached; cache version v2.
+- **Acknowledgement policy**: the page never creates system notifications (no `new Notification`, no
+  `showNotification` from the page), so a notification that arrives over SSE and by push renders once as a row with a
+  `push HH:MM:SS` marker. Acks happen only on the Ack button, on opening a notification (click → message, or
+  `?notification=<id>` on a fresh window, which is then stripped from the URL), and when the worker delivered a push
+  while this page was visible **and** focused (the worker's judgement re-checked by the page). SSE arrival — hidden or
+  visible — never acks. Acking closes the matching system banner via `getNotifications({tag})`.
+
+**Reconnect / lifecycle fixes (`runControl.ts`, `agentFeed.ts`, `session.ts`, `submissions.ts`, `main.ts`).**
+- Double Start race closed: previously a second click during `await current.stop(...)` created a parallel Run
+  (second camera acquisition, second face/speech socket, second ticker). `RunSwitcher` owns exactly one Run; a Start
+  during a switch is ignored (not queued); callbacks report only while `runs.owns(run)`. Start is disabled immediately.
+- `pagehide` still stops the Run (camera/mic released); nothing restarts by itself on return — only a fresh Start.
+- SSE stream: `wake()` on `visibilitychange → visible` reopens a stream the browser dropped while hidden (readyState
+  CLOSED) immediately instead of waiting out the remaining backoff, cancelling the pending timer so no double
+  reopen; a healthy stream is untouched; a stopped stream never reopens. The agent status line now shows `last event
+  N s ago` and the reconnect reason. Visibility return also re-fetches notifications/status/tasks (ids dedupe).
+- Polls are single-flight (`pollDashboard`, `pollAgentStatus`, `pollTasks`, `loadNotifications`): the 3 s / 2.5 s
+  intervals with 5–8 s timeouts could stack requests on a slow bridge; overlapping calls now join the in-flight one.
+- Backlog source age: the Captures row shows `backlog N photo(s), oldest source X old` (photos awaiting encode, face
+  or HTTP, from `pending` + the submission ledger's new `capturedAt`), the Transcripts row shows the oldest queued
+  revision's age; both turn amber past 15 s / 10 s. Reconnect states of the face/speech sockets were already
+  explicit (`reconnecting (attempt n)`, bounded 6/5 attempts, new streamId per connection, explicit gaps) and are
+  unchanged; the 5 s anchored cadence, immediate agent capture, Start/Stop and the device selectors are untouched.
+
+### Tests added (Node, no browser/credentials; `client/test/`)
+
+| File | Covers |
+|---|---|
+| `push.test.ts` (12) | support matrix + guidance (HTTPS, iOS not installed, denied, unsupported); VAPID key decode/compare; Enable happy path with 5 s delivery poll; denied/dismissed permission → no key/subscribe; 503 → not configured; agent refusal → browser rollback; browser subscribe failure visible; rotated key replaced / same key reused; `refresh()` reads only and re-syncs; disable paths incl. agent DELETE failure and browser refusal; test push + clearStatus; one operation at a time (three concurrent clicks → one permission prompt); no registration; `stop()`; worker-message and `?notification=` parsing |
+| `sw.test.ts` (4) | the real `public/sw.js` in a `node:vm` sandbox: one banner per id, duplicate/foreground flags, foreign windows ignored, re-push after the user closed the banner blocked; payload validation (unreadable, no id, array, null, control chars, 2000-char bound, cross-origin and protocol-relative urls → root, non-string id); click → focus + message, hidden-only window focused, no window → `openWindow` same-origin with id, foreign `data.url` never navigated; fetch handler never intercepts `/api/*`, `/ws/*`, `/v1/*`, `/static/*`, `/sw.js`, foreign origins |
+| `runControl.test.ts` (4) | double Start → one Run; Start during a slow previous Stop ignored (three clicks, one new Run); failing previous Stop does not block; `singleFlight` sharing/reset; ledger `oldestUnsettledCapturedAt`, queue `peek` |
+| `agentFeed.test.ts` (+2) | `wake()` reopens a dropped stream immediately and cancels the backoff timer, ignores a healthy stream, recovers a CLOSED stream that never fired `onerror`, never reopens after `stop()`; push markers/ack reasons; last-event age text |
+
+Results: `npm run check:client` clean · `npm run test:client` **106 pass, 0 fail** (84 before) · `npm run build:client`
+`public/client.js` 180.5 kB · `npm run check` (memory server typecheck) clean.
+
+### Browser QA (`node client/qa/browserQa.mjs`, isolated mock, random port) — **48/48**
+
+Previous 27 checks unchanged and passing. New push/lifecycle checks, exact behaviour observed in headless Chromium
+(**full `chromium` channel**; the Playwright headless *shell* reports `Notification.permission === 'denied'` regardless
+of `grantPermissions`, which is why the driver prefers the full build and says so if it falls back):
+- idle: `notifications: ready · permission granted · push not enabled on this device`, Enable enabled, **zero**
+  `/api/agent/push/*` calls on load; guidance mentions the click and “No token is needed”.
+- Enable (fake `PushManager` injected before page scripts — headless Chromium has no push service): order
+  `GET key → POST subscriptions → GET status`; the mock agent holds 1 subscription with endpoint + `keys`; the
+  subscribe call received the 65-byte `0x04…` key; Disable/Send test visible, counters `1 device(s)`.
+- Send test push: one `POST /api/agent/push/test`; the test answer arrives as a row over SSE, **not** acked, no push
+  marker (no push event happened); status says nothing is assumed delivered.
+- CDP `ServiceWorker.deliverPushMessage` into the **real** registered worker: valid `{id:'n2',…}` → exactly one
+  system notification (tag `kawk-notification:n2`, same-origin `data.url`); the page (visible, `hasFocus()` true)
+  shows `push HH:MM:SS` and `acked (displayed in the foreground via push)` with one ack POST; the same id pushed
+  again → still one banner and no second ack; `'this is not json'` → `…:unreadable` banner; `url:'https://evil…'` →
+  `data.url` is our root; a push for an id never seen over SSE renders once; no duplicate rows; no `/api/*` in cache.
+- `/?notification=n1` → row highlighted (`li.opened`), `acked (opened from notification)`, one ack POST, URL stripped;
+  the reload re-synced the existing browser subscription (one extra `POST subscriptions`, no new `subscribe()`).
+- Disable → `subscription.unsubscribe()` once, `DELETE {endpoint}`, mock has 0 subscriptions, Enable visible; Clear
+  status resets the line.
+- Context without permission grant: Enable → `permission denied`, denied guidance, **no** key/subscribe call.
+- Mock with push disabled (503 on key): `error … push is not configured on the agent: … HTTP 503`, browser never
+  subscribed, Enable still available.
+- Screenshots `/tmp/kawk-merged-ui-qa/{desktop,mobile}.png`; no console/page errors.
+
+### Still requires real devices / not proven here
+
+- **Apple/iOS background delivery is not proven.** Nothing above sends through a push service: the browser
+  subscription is a fake in QA, and the push events were injected by DevTools. Real checks need: the Codex proxy
+  routes live; the page served over **HTTPS** (or the localhost origin on the Mac); on iPhone, KAWK **added to the Home
+  Screen** and opened from there (Safari tab → guidance only, no `PushManager`); Enable pressed; **Send test push**;
+  then observe (a) the system banner with the app closed/backgrounded, (b) `sent/failed` counters, (c) tapping the
+  banner opens/focuses KAWK and the row shows `opened from notification`. Repeat with the app killed and after a
+  device restart; iOS may throttle or revoke silent/unshown pushes — this worker always shows one banner per id.
+- `notificationclick` focus/open behaviour ran only in the Node sandbox (CDP cannot click a banner); the message and
+  `?notification=` paths it produces were exercised in the browser.
+- The agent's real `/v1/push/*` payload shape and the `pending/sent/failed` semantics were taken from the request;
+  the mock mirrors that contract, the real agent was not exercised from this pass.
+- Foreground-ack relies on `WindowClient.focused` + `document.hasFocus()`; on desktop with the window unfocused the
+  banner appears and nothing is acked (verified only in the sandbox via `focused:false`).
+- Hidden-tab SSE eviction, bfcache and iOS app-switch behaviour of `pagehide`/`wake()` are covered by fake
+  EventSource tests, not on a phone. Camera/mic/perception paths were not run (no Start in QA), as before.
+
+## Final review fixes (2026-09-20, ≈04:50–05:10) — Safari activation, WebKit display rule, pipeline outcomes, how-to
+
+Author: Claude Code, model `claude-fable-5-1`. Same scope (`memory/client/**`, `memory/public/**`, this file); nothing
+committed, no backend/credential/recording/service changes, no live `:8082` runs (isolated mock QA only).
+
+1. **Safari user-activation** (`push.ts`, `main.ts`, `index.html`). Apple requires `pushManager.subscribe()` inside
+   the user gesture. The controller now has `prepare()` (page load and a **Retry push setup** button): fetches and
+   caches the agent key, awaits the ready registration, drops a subscription made for a rotated key, re-syncs an
+   existing one (idempotent upsert). The Enable button is enabled only when `prepared` is true. `enable()` calls
+   `subscribe({userVisibleOnly, applicationServerKey: cachedKey})` **synchronously before its first await**; the
+   browser prompts for permission inside that call (no separate `requestPermission()`); `NotAllowedError` with
+   permission `denied` → denied state + settings guidance, dismissed prompt → “not granted; press Enable again”. The
+   agent POST happens afterwards, rolled back on refusal. Setup failures (503 “not configured”, key unavailable, no
+   registration) are visible with Enable disabled and Retry offered. No token/manual input anywhere.
+   Tests: `push.test.ts` “subscribe() is invoked SYNCHRONOUSLY from the click … before any await” asserts the fake
+   PushManager's synchronous marker is set before `enable()` returns and that no network call preceded it; browser QA
+   clicks Enable inside `page.evaluate` and reads a counter the fake increments synchronously (`calledDuringClick: 1`).
+2. **WebKit display rule** (`sw.js`). Every push now calls `showNotification`; a repeated id uses the **same tag with
+   `renotify:false`**, so the banner is replaced without a new notification identity or alert — no silent return, no
+   client-side suppression. The id is remembered only after a successful display (informational `duplicate` flag for
+   the page); a rejected `showNotification` is not remembered, is reported to windows as `displayed:false`, and is
+   rethrown to `waitUntil`. Windows are messaged **after** the display settles, so the page's reaction can no longer
+   race the banner (this was a real ordering bug: the foreground ack used to close a banner that had not appeared yet).
+   The foreground-display ack no longer closes the banner at all; only Ack/open do. Same-origin click focus and the
+   no-cache rules are unchanged. Tests: `sw.test.ts` — repeat id → `showNotification` called again, one banner, updated
+   body, `renotify:false`, page told `duplicate:true`; closed banner + re-push → shown again; rejected display → not
+   marked, `displayed:false`, next push shows as a first display; browser QA “same id pushed again → … still one
+   notification, no second ack” against the real worker.
+3. **Pipeline outcomes** (`api.ts`, `main.ts`, `styles.css`). The existing Server pipeline line now leads with
+   `failed N (old failures persist until repaired; raw photos/transcripts stay saved) · committed N · accepted N ·
+   derived memory source X old` (from `/api/dashboard` `pipeline.failed/committed/accepted/latestMemoryAgeMs`, plus
+   `oldest waiting` from `oldestPendingMs`), turns red when `failed > 0`; “no derived memory yet” when
+   `latestMemoryAgeMs` is null. A shrinking queue alone no longer reads as success. No new dashboard.
+   QA: mock reports failed 2 / committed 40 / accepted 43 / 95 s → text and red class asserted.
+4. **How-to** (`index.html`). One visible line under the controls: Start = camera + microphone (photo every 5 s,
+   live speech) until Stop; Agent box = questions/instructions; Memory search = stored history; nothing records until
+   Start. The long “what happens when” paragraph moved into a collapsed Details. Push wording: `"sent" = accepted by
+   the push service, not proof the OS displayed it; background receipt needs a real iPhone test`.
+
+Results: `npm run check:client` clean · `npm run test:client` **107 pass, 0 fail** · `npm run build:client` 182.8 kB ·
+browser QA **52/52** (screenshots refreshed in `/tmp/kawk-merged-ui-qa/`).
+
+Remaining limitations: unchanged from the previous section — real Safari/iOS activation, OS/Apple background receipt,
+banner taps and the live agent `/v1/push/*` routes are not exercised here; the synchronous-subscribe rule is proven
+against a fake PushManager in Chromium and in Node, not in Safari itself.

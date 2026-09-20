@@ -3,7 +3,7 @@
 // is "accepted" only after the server answered 202; "failed" means it will never be remembered.
 export type SubmissionStatus = 'pending' | 'submitting' | 'accepted' | 'failed';
 export interface SubmissionCounts { pending: number; submitting: number; accepted: number; failed: number; total: number }
-export interface SubmissionState { id: string; status: SubmissionStatus; attempts: number; error: string | null; acceptedAt: number | null; latencyMs: number | null }
+export interface SubmissionState { id: string; status: SubmissionStatus; attempts: number; error: string | null; acceptedAt: number | null; latencyMs: number | null; /** Source time of the photo (draw time); lets the page show how old the unsent backlog is. */ capturedAt: number }
 
 export interface Sender<B> { (body: B): Promise<{ ok: boolean; status: number; text: string }> }
 
@@ -22,6 +22,12 @@ export class SubmissionLedger<B> {
   }
   get(id: string): SubmissionState | undefined { return this.states.get(id); }
   recent(limit: number): SubmissionState[] { return [...this.states.values()].slice(-limit).reverse(); }
+  /** Source time of the oldest capture that is still pending/submitting (null when nothing is waiting). */
+  oldestUnsettledCapturedAt(): number | null {
+    let oldest: number | null = null;
+    for (const s of this.states.values()) if ((s.status === 'pending' || s.status === 'submitting') && (oldest === null || s.capturedAt < oldest)) oldest = s.capturedAt;
+    return oldest;
+  }
 
   /**
    * Submit `body` under `id` exactly once. A second call for the same id is a no-op returning 'duplicate'.
@@ -29,7 +35,7 @@ export class SubmissionLedger<B> {
    */
   async submit(id: string, body: B, capturedAt: number): Promise<SubmissionStatus | 'duplicate'> {
     if (this.states.has(id)) return 'duplicate';
-    const state: SubmissionState = { id, status: 'pending', attempts: 0, error: null, acceptedAt: null, latencyMs: null };
+    const state: SubmissionState = { id, status: 'pending', attempts: 0, error: null, acceptedAt: null, latencyMs: null, capturedAt };
     this.states.set(id, state);
     this.emit(state);
     const maxInFlight = this.opts.maxInFlight ?? 4;
@@ -80,5 +86,6 @@ export class BoundedRevisionQueue<T extends { isFinal: boolean }> {
     }
   }
   shift(): T | undefined { return this.items.shift(); }
+  peek(): T | undefined { return this.items[0]; }
   get length(): number { return this.items.length; }
 }

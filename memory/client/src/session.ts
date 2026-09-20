@@ -40,6 +40,8 @@ export interface RunSnapshot {
   interrupt: InterruptState | null;
   /** Live face forwarding to the agent bridge (identity-set changes + heartbeat); null when disabled. */
   liveFaces: LiveFaceState | null;
+  /** Unsent work and how old its SOURCE is: photos awaiting encode/face/HTTP and transcript revisions awaiting POST. */
+  backlog: { photos: number; oldestPhotoCapturedAt: number | null; transcripts: number; oldestTranscriptReceivedAt: number | null };
   errors: RunErrors[];
 }
 /** Stop-time snapshot lifecycle. 'accepted' means HTTP 202 only, not that memory was committed. */
@@ -522,6 +524,14 @@ export class Run {
   }
   private update(): void { this.deps.onUpdate(this.snapshot()); }
 
+  private backlog(): RunSnapshot['backlog'] {
+    let oldestPhoto = this.submissions.oldestUnsettledCapturedAt();
+    for (const p of this.pending.values()) if (oldestPhoto === null || p.capturedAt < oldestPhoto) oldestPhoto = p.capturedAt;
+    const sub = this.submissions.counts();
+    const head = this.transcriptQueue.peek();
+    return { photos: this.pending.size + sub.pending + sub.submitting, oldestPhotoCapturedAt: oldestPhoto, transcripts: this.transcriptQueue.length, oldestTranscriptReceivedAt: head ? head.transcript.receivedAt : null };
+  }
+
   snapshot(): RunSnapshot {
     const sub = this.submissions.counts();
     const face = this.face.status ?? { phase: 'idle' as const, streamId: null, epoch: 0, attempt: 0, message: 'idle', model: null, backend: null, connections: 0 };
@@ -541,6 +551,7 @@ export class Run {
       finalCapture: this.finalCapture,
       interrupt: this.interrupt,
       liveFaces: this.liveFaceState,
+      backlog: this.backlog(),
       errors: [...this.errors],
     };
   }

@@ -21,6 +21,12 @@ export function createMockServer(options = {}) {
     { id: 't0', status: 'done', goal: 'summarize the morning', result: { summary: 'Two meetings, coffee with Sam.' }, createdAt: Date.now() - 900_000, updatedAt: Date.now() - 800_000 },
   ];
   const commands = [];
+  // Web Push mock: a VAPID-shaped public key (65 bytes, URL-safe base64), subscriptions keyed by endpoint, counters.
+  // Nothing is delivered from here (no push service); the browser QA injects push events through CDP instead.
+  const pushKey = Buffer.from(Uint8Array.from({ length: 65 }, (_, i) => (i === 0 ? 4 : (i * 53) % 251))).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const pushSubscriptions = new Map();
+  const pushCounters = { pending: 0, sent: 0, failed: 0 };
+  let pushTests = 0;
   const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
   const readBody = (req) => new Promise((resolveBody) => { const chunks = []; req.on('data', (c) => chunks.push(c)); req.on('end', () => { const text = Buffer.concat(chunks).toString('utf8'); try { resolveBody(text ? JSON.parse(text) : {}); } catch { resolveBody({ __raw: text }); } }); });
   const broadcast = (n) => { for (const res of sseClients) res.write(`event: notification\ndata: ${JSON.stringify(n)}\n\n`); };
@@ -35,10 +41,28 @@ export function createMockServer(options = {}) {
     if (path === '/__qa/notify' && req.method === 'POST') { const n = { id: body.id ?? `n${Date.now()}`, taskId: body.taskId ?? null, text: body.text ?? 'test', createdAt: Date.now(), refs: body.refs ?? [] }; notifications.push(n); broadcast(n); return json(res, 200, n); }
     if (path === '/__qa/command' && req.method === 'POST') { const c = { id: body.id ?? `cmd${Date.now()}`, type: 'capture', reason: body.reason ?? 'qa', createdAt: Date.now(), expiresAt: Date.now() + (body.ttlMs ?? 10_000), claimedBy: null, result: null }; commands.push(c); return json(res, 200, c); }
     if (path === '/__qa/drop-sse' && req.method === 'POST') { for (const c of sseClients) c.end(); sseClients.clear(); return json(res, 200, { dropped: true }); }
+    if (path === '/__qa/push' && req.method === 'GET') return json(res, 200, { subscriptions: [...pushSubscriptions.values()], counters: pushCounters, key: pushKey });
+
+    // ---- Web Push contract (same-origin proxy of the agent's /v1/push/*) ----
+    if (path === '/api/agent/push/key' && req.method === 'GET') return options.pushConfigured === false ? json(res, 503, { error: 'Push is not configured' }) : json(res, 200, { publicKey: pushKey });
+    if (path === '/api/agent/push/subscriptions' && req.method === 'POST') {
+      if (typeof body.endpoint !== 'string' || !/^https:\/\//.test(body.endpoint) || typeof body.keys?.p256dh !== 'string' || typeof body.keys?.auth !== 'string') return json(res, 400, { error: 'invalid subscription' });
+      pushSubscriptions.set(body.endpoint, { endpoint: body.endpoint, keys: body.keys, at: Date.now() });
+      return json(res, 200, { subscribed: true });
+    }
+    if (path === '/api/agent/push/subscriptions' && req.method === 'DELETE') { if (typeof body.endpoint !== 'string') return json(res, 400, { error: 'endpoint required' }); pushSubscriptions.delete(body.endpoint); return json(res, 200, { subscribed: false }); }
+    if (path === '/api/agent/push/status' && req.method === 'GET') return json(res, 200, { subscriptions: pushSubscriptions.size, ...pushCounters });
+    if (path === '/api/agent/push/test' && req.method === 'POST') {
+      pushTests += 1;
+      const n = { id: `push-test-${pushTests}`, taskId: null, text: `Test push ${pushTests} from the agent.`, createdAt: Date.now(), refs: [] };
+      notifications.push(n); broadcast(n); // the real agent also delivers this as a normal notification over SSE
+      pushCounters.sent += pushSubscriptions.size; // the mock "delivers" to every subscription instantly; no device is reached
+      return json(res, 200, { id: n.id, queued: true, subscriptions: pushSubscriptions.size });
+    }
 
     // ---- memory contract (minimal) ----
     if (path === '/api/config') return json(res, 200, { captureIntervalMs: 5000, transcriptWords: 200, provider: 'mock', model: 'mock-vision', writerModel: 'mock-writer', perceptionUrl: 'http://localhost:0', speechBackend: 'local', speechNotice: 'QA mock: no speech server' });
-    if (path === '/api/dashboard') return json(res, 200, { state: null, entities: [{ id: 'e1', kind: 'object', label: 'keys', description: '', personId: null, createdAt: Date.now() - 100_000, lastSeenAt: Date.now() - 50_000, attributes: {} }], observations: [], events: [], encounters: [], captures: [], stats: { mock: 1 }, pipeline: { running: true, queue: 0, observing: 0, reducing: null, indexing: false, lastError: null, latencies: [] } });
+    if (path === '/api/dashboard') return json(res, 200, { state: null, entities: [{ id: 'e1', kind: 'object', label: 'keys', description: '', personId: null, createdAt: Date.now() - 100_000, lastSeenAt: Date.now() - 50_000, attributes: {} }], observations: [], events: [], encounters: [], captures: [], stats: { mock: 1 }, pipeline: { running: true, queue: 0, failed: options.pipelineFailed ?? 2, committed: 40, accepted: 43, latestMemoryAgeMs: 95_000, oldestPendingMs: 0, observing: 0, reducing: null, indexing: false, lastError: null, latencies: [] } });
     if (path === '/api/people' && req.method === 'GET') return json(res, 200, { people: [], resetBefore: null });
     if (path === '/api/sessions' && req.method === 'POST') return json(res, 201, { id: `sess_${Date.now()}`, startedAt: Date.now() });
     if (path === '/api/captures' && req.method === 'POST') return json(res, 202, { id: body.id, status: 'queued' });
@@ -90,7 +114,7 @@ export function createMockServer(options = {}) {
     } catch { json(res, 404, { error: 'not found' }); }
   });
   return {
-    server, log, commands, notifications, tasks,
+    server, log, commands, notifications, tasks, pushSubscriptions, pushCounters, pushKey,
     listen: () => new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port))),
     close: () => new Promise((r) => { for (const c of sseClients) c.end(); server.close(() => r()); }),
   };

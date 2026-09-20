@@ -72,6 +72,20 @@ test('lexical writer index quotes untrusted words and tracks text corrections', 
   store.db.prepare("UPDATE observations SET text='UniqueB' WHERE text='UniqueA'").run();
   assert.equal(store.contextNotes(['UniqueA']).length, 0);
   assert.equal(store.contextNotes(['UniqueB']).length, 1);
+  store.db.prepare("UPDATE observations SET text='李雷 studies AI' WHERE text='UniqueB'").run();
+  assert.equal(store.contextNotes(['李雷']).length, 1, 'short non-Latin names remain searchable');
+  assert.equal(store.contextNotes(['AI']).length, 1, 'short acronyms remain searchable');
+});
+
+test('a rare term in a later query chunk can retrieve an old note beyond the first chunk result limit', t => {
+  const store = new Store(':memory:', 3, 'fixture'); t.after(() => store.close()); store.createSession('session', 0);
+  commit(store, packet('rare', 10, { ...baseVision, scene: 'Zebulon keyring', observations: [] }), delta());
+  const common = Array.from({ length: 128 }, (_, i) => `commonword${i}`).join(' ');
+  commit(store, packet('many', 20, { ...baseVision, scene: common,
+    observations: Array.from({ length: 30 }, (_, i) => `${common} visible item ${i}`) }), delta());
+  const notes = store.contextNotes([common, 'Zebulon']);
+  assert.equal(notes.length, 24);
+  assert.ok(notes.some(note => note.text === 'Zebulon keyring'), 'later source terms must not lose to insertion-order truncation');
 });
 
 test('continuity retains the full latest scene, ongoing events and exact faces without unrelated anonymous bodies', async t => {

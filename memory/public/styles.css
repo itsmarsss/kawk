@@ -92,3 +92,14 @@ h1 .sub { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6
 .agent-list .refs a { margin-right: 8px; }
 .agent-tasks-details { margin: 6px 0 0; }
 .agent-list .st-active { color: var(--warn); } .agent-list .st-terminal { color: var(--muted); }
+
+.push { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+.push-actions { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.push [hidden] { display: none; }
+#push-status.ok { color: var(--ok); } #push-status.warn { color: var(--warn); } #push-status.bad { color: var(--bad); }
+#push-guidance { margin-top: 4px; } #push-delivery { margin-top: 4px; }
+.agent-list li.opened { outline: 1px solid var(--warn); outline-offset: -1px; }
+.agent-list .via { color: var(--ok); }
+.howto { margin: 6px 0 0; font-size: 13px; color: var(--fg); }
+.page-details { margin: 4px 0 0; } .page-details summary { font-size: 12px; }
+#pipeline.bad { color: var(--bad); } #pipeline.warn { color: var(--warn); }

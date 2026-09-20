@@ -61,6 +61,6 @@ test('Run and page wiring: selector → Run.start; final-only forwarding after a
   assert.ok(!session.includes("{ backend: 'baseten' }"), 'no hard-coded cloud backend remains');
   const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
   assert.match(main, /speechBackend: selectedSpeechBackend\(\)/, 'Start passes the selector value');
-  assert.match(main, /current\?\.resetFaces\(what\)/, 'a confirmed deletion recycles the live face link');
+  assert.match(main, /runs\.run\?\.resetFaces\(what\)/, 'a confirmed deletion recycles the live face link');
   assert.match(main, /if \(!r \|\| r\.deleted !== true\) throw/, 'the row is never cleared before the server confirms');
 });

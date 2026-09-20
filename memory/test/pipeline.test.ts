@@ -66,6 +66,24 @@ test('missing batch rows recover individually instead of silently dropping captu
   } finally { await s.cleanup(); }
 });
 
+test('transactional batch validation failures retry each preserved source through the normal commit checks', async () => {
+  let observed = 0;
+  const s = await setup({ observe: async () => { observed++; return vision; }, update: async p => delta(p),
+    updateBatch: async packets => ({ updates: packets.map(p => ({ packetId: p.id, packetVersion: p.version, delta: delta(p), reuse: [] })) }),
+  }, { autoStart: false });
+  const commit = s.store.commitBatch.bind(s.store);
+  s.store.commitBatch = (packets, batch) => {
+    if (packets.length > 1) throw Error('Batch reuse entity kind or person identity conflict');
+    return commit(packets, batch);
+  };
+  try {
+    await s.pipeline.capture(capture('first', 5000, 1)); await s.pipeline.capture(capture('second', 10000, 2));
+    s.pipeline.start(); await until(() => s.store.getCapture('second')?.status === 'committed');
+    assert.equal(observed, 2); assert.equal(s.pipeline.snapshot().failed, 0);
+    assert.equal(s.store.history().length, 2); assert.equal(s.store.currentState().observedAt, 10000);
+  } finally { await s.cleanup(); }
+});
+
 test('captures remain independent of inference; out-of-order vision commits in capture order', async () => {
   let release!: () => void;
   const slow = new Promise<void>(r => { release = r; });

@@ -250,6 +250,7 @@ export class MemoryPipeline {
   }
   private async reduce(captures: CaptureRecord[]) {
     const started = this.now();
+    let committing = false;
     try {
       const packets = captures.map(c => this.packet(c));
       const contextGeneration = this.contextInvalidationGeneration;
@@ -273,6 +274,7 @@ export class MemoryPipeline {
         return;
       }
       const commitStarted = this.now();
+      committing = true;
       this.store.commitBatch(packets, batch);
       this.record(captures[0].id, 'memory_commit', this.now() - commitStarted);
       for (const c of captures) {
@@ -282,8 +284,8 @@ export class MemoryPipeline {
     } catch (e) {
       // Invalid cross-row references never commit. Retry the preserved packets separately;
       // each still goes through full source/identity validation and normal attempt limits.
-      if (captures.length > 1 && e instanceof Error &&
-          /invalid_batch_reuse|batch_reuse_conflict|duplicate_batch_reuse|batch_row_count|batch_row_mismatch|invalid_object_match_ref|object_match_without_target|incomplete_attribute|schema_validation/.test(e.message)) {
+      if (captures.length > 1 && e instanceof Error && (committing ||
+          /invalid_batch_reuse|batch_reuse_conflict|duplicate_batch_reuse|batch_row_count|batch_row_mismatch|invalid_object_match_ref|object_match_without_target|incomplete_attribute|schema_validation/.test(e.message))) {
         this.lastError = 'Batch output failed validation; retrying saved packets individually';
         for (const c of captures) this.store.forceSingleUpdate(c.id);
       } else for (const c of captures) this.fail(c.id, e);

@@ -23,8 +23,11 @@
     <button id="refresh" type="button" class="quiet">Refresh devices</button>
     <a href="http://localhost:8081/faces" target="_blank" rel="noopener">Enrolled faces (lab, port 8081)</a>
   </div>
+  <p id="how-to" class="howto"><b>How to use:</b> <b>Start</b> records camera + microphone (a photo every 5 s, live speech) until <b>Stop</b>. <b>Agent</b> box (right) = ask questions or give instructions. <b>Memory search</b> (bottom right) = look through stored history. Nothing records until you press Start.</p>
   <p id="config-note" class="note">loading config…</p>
-  <p class="note">Page load only reads config/dashboard/agent status and lists devices. Start creates a session, acquires camera + microphone and opens face/speech sockets; Search runs only on submit. Capture cadence is fixed; memory completion is not promised every 5 s. While running, the agent may request one immediate extra photo (status row “Agent capture”). <span id="pwa-note"></span></p>
+  <details class="page-details"><summary>Details: what happens when</summary>
+    <p class="note">Page load only reads config/dashboard/agent status and lists devices. Start creates a session, acquires camera + microphone and opens face/speech sockets; Search runs only on submit. Capture cadence is fixed; memory completion is not promised every 5 s. While running, the agent may request one immediate extra photo (status row “Agent capture”). <span id="pwa-note"></span></p>
+  </details>
 </header>
 
 <main>
@@ -63,7 +66,19 @@
       <input id="agent-input" type="text" placeholder="ask or instruct the agent, e.g. what did I leave on the desk" autocomplete="off" maxlength="2000">
       <button id="agent-send" type="submit">Send</button>
     </form>
-    <p id="agent-note" class="note">manual input works with the camera stopped; a running session is attached automatically</p>
+    <p id="agent-note" class="note">ask or instruct here; works with the camera stopped, and a running session is attached automatically</p>
+    <div class="push">
+      <div class="push-actions">
+        <button id="push-enable" type="button" disabled>Enable notifications</button>
+        <button id="push-prepare" type="button" class="quiet" hidden>Retry push setup</button>
+        <button id="push-disable" type="button" class="quiet" hidden>Disable notifications</button>
+        <button id="push-test" type="button" class="quiet" hidden>Send test push</button>
+        <button id="push-clear" type="button" class="quiet tiny">Clear status</button>
+      </div>
+      <p id="push-status" class="note mono">notifications: checking…</p>
+      <p id="push-guidance" class="note"></p>
+      <p id="push-delivery" class="note mono small"></p>
+    </div>
     <ul id="agent-notifications" class="list agent-list"><li class="empty">no agent answers yet</li></ul>
     <details class="agent-tasks-details" open>
       <summary id="agent-tasks-summary">Tasks (0)</summary>

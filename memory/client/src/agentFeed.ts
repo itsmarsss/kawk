@@ -7,7 +7,13 @@
 //   - the SSE connection is wrapped so its state is visible and a closed stream is reopened with backoff.
 import type { Clock } from './types.ts';
 
-export interface AgentNotification { id: string; taskId: string | null; text: string; createdAt: number | null; refs: unknown[]; acked: boolean; receivedAt: number; raw: Record<string, unknown> }
+export interface AgentNotification {
+  id: string; taskId: string | null; text: string; createdAt: number | null; refs: unknown[]; acked: boolean; receivedAt: number; raw: Record<string, unknown>;
+  /** When the service worker reported this id arriving by Web Push (null: seen via GET/SSE only). */
+  pushAt: number | null;
+  /** Why the page acknowledged it (null: not acked here — server-reported or manual Ack button). */
+  ackReason: string | null;
+}
 
 export function parseNotification(raw: unknown, receivedAt: number): AgentNotification | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -17,7 +23,7 @@ export function parseNotification(raw: unknown, receivedAt: number): AgentNotifi
   return {
     id: o.id, taskId: typeof o.taskId === 'string' ? o.taskId : null, text,
     createdAt: typeof o.createdAt === 'number' && Number.isFinite(o.createdAt) ? o.createdAt : null,
-    refs: Array.isArray(o.refs) ? o.refs : [], acked: o.acked === true || typeof o.ackedAt === 'number', receivedAt, raw: o,
+    refs: Array.isArray(o.refs) ? o.refs : [], acked: o.acked === true || typeof o.ackedAt === 'number', receivedAt, raw: o, pushAt: null, ackReason: null,
   };
 }
 
@@ -33,7 +39,9 @@ export class NotificationLedger {
     while (this.items.size > this.max) { const oldest = this.list().at(-1); if (!oldest) break; this.items.delete(oldest.id); }
     return true;
   }
-  ack(id: string): void { const n = this.items.get(id); if (n) n.acked = true; }
+  ack(id: string, reason: string | null = null): void { const n = this.items.get(id); if (n) { n.acked = true; if (reason) n.ackReason = reason; } }
+  /** Service worker reported a push for this id. Returns false when the id is unknown to the ledger. */
+  markPush(id: string, at: number): boolean { const n = this.items.get(id); if (!n) return false; if (n.pushAt === null) n.pushAt = at; return true; }
   get(id: string): AgentNotification | undefined { return this.items.get(id); }
   get size(): number { return this.items.size; }
   /** Newest first by createdAt (falling back to receipt time). */
@@ -73,8 +81,9 @@ export function taskResultText(result: unknown): string | null {
 }
 
 export interface AgentStatusView { text: string; tone: '' | 'ok' | 'warn' | 'bad' }
-export function describeAgentConnection(status: { connected?: boolean; bridge?: { pending?: number; lastError?: string | null } | null; agent?: { running?: boolean; activeTurns?: number; lastError?: string | null } | null } | null, statusError: string | null, stream: StreamState): AgentStatusView {
-  const streamText = stream.phase === 'open' ? 'live updates on' : stream.phase === 'connecting' ? 'live updates connecting' : stream.phase === 'reconnecting' ? `live updates reconnecting (attempt ${stream.attempt})` : stream.phase === 'closed' ? 'live updates off' : 'live updates idle';
+export function describeAgentConnection(status: { connected?: boolean; bridge?: { pending?: number; lastError?: string | null } | null; agent?: { running?: boolean; activeTurns?: number; lastError?: string | null } | null } | null, statusError: string | null, stream: StreamState, now: number | null = null): AgentStatusView {
+  const age = now !== null && stream.lastEventAt !== null ? ` · last event ${Math.max(0, Math.round((now - stream.lastEventAt) / 1000))} s ago` : '';
+  const streamText = (stream.phase === 'open' ? 'live updates on' : stream.phase === 'connecting' ? 'live updates connecting' : stream.phase === 'reconnecting' ? `live updates reconnecting (attempt ${stream.attempt}${stream.lastError ? `, ${stream.lastError}` : ''})` : stream.phase === 'closed' ? 'live updates off' : 'live updates idle') + age;
   if (statusError) return { text: `agent unreachable: ${statusError} · ${streamText}`, tone: 'bad' };
   if (!status) return { text: `agent status unknown · ${streamText}`, tone: '' };
   const a = status.agent; const b = status.bridge;
@@ -112,6 +121,18 @@ export class NotificationStream {
   }) {}
   get snapshot(): StreamState { return { ...this.state }; }
   start(): void { if (this.active) return; this.active = true; this.open(); }
+  /**
+   * The tab became visible again (or the network came back): a stream the browser silently dropped while
+   * hidden is reopened NOW instead of after the remaining backoff. A healthy open stream is left alone.
+   */
+  wake(): void {
+    if (!this.active) return;
+    const dead = this.es === null || this.es.readyState === 2;
+    if (!dead) return;
+    if (this.timer !== null) { this.opts.clock.clearTimeout(this.timer); this.timer = null; }
+    this.es?.close(); this.es = null;
+    this.open();
+  }
   stop(): void {
     this.active = false;
     if (this.timer !== null) this.opts.clock.clearTimeout(this.timer);

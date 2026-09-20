@@ -16,6 +16,8 @@ import { SPEECH_BACKEND_OPTIONS, defaultSpeechBackend, describeSpeechBackend, no
 import type { Transcript } from './types.ts';
 import { sortPeople, countPeople, deleteButtonLabel, confirmDeleteButtonLabel } from './people.ts';
 import { summarizeIntroduction } from './introductions.ts';
+import { RunSwitcher, singleFlight } from './runControl.ts';
+import { NOTIFICATION_TAG_PREFIX, PushController, notificationIdFromSearch, parseWorkerMessage, readPushEnvironment, type PushState } from './push.ts';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -37,10 +39,12 @@ const ui = {
   searchResults: $('search-results'), searchNote: $('search-note'), configNote: $('config-note'), dashNote: $('dash-note'),
   agentStatus: $('agent-status'), agentForm: $<HTMLFormElement>('agent-form'), agentInput: $<HTMLInputElement>('agent-input'), agentSend: $<HTMLButtonElement>('agent-send'), agentNote: $('agent-note'),
   agentNotifications: $('agent-notifications'), agentTasks: $('agent-tasks'), agentTasksSummary: $('agent-tasks-summary'), pwaNote: $('pwa-note'),
+  pushEnable: $<HTMLButtonElement>('push-enable'), pushPrepare: $<HTMLButtonElement>('push-prepare'), pushDisable: $<HTMLButtonElement>('push-disable'), pushTest: $<HTMLButtonElement>('push-test'), pushClear: $<HTMLButtonElement>('push-clear'),
+  pushStatus: $('push-status'), pushGuidance: $('push-guidance'), pushDelivery: $('push-delivery'),
 };
 
 let config: ClientConfig = { captureIntervalMs: 5000, transcriptWords: 200 };
-let current: Run | null = null;
+const runs = new RunSwitcher<Run>(); // exactly one Run per Start; a Start during a switch is ignored
 let liveFaces: LiveFaces | null = null;
 let lastSnapshot: RunSnapshot | null = null;
 let dashboard: Dashboard | null = null;
@@ -108,9 +112,13 @@ function renderSnapshot(s: RunSnapshot | null): void {
   setRow('Agent capture', !it ? (s.phase === 'running' ? 'command polling disabled' : 'polls GET /api/agent/commands every 400 ms while running')
     : `${it.message} · polls ${it.counts.polls}${it.counts.pollErrors ? ` (errors ${it.counts.pollErrors})` : ''} · claimed ${it.counts.claimed} · captured ${it.counts.captured} · failed ${it.counts.failed} · not claimed ${it.counts.notClaimed} · expired ${it.counts.expired}${it.lastPollError ? ` · last poll error: ${it.lastPollError}` : ''}`,
     !it ? '' : it.stage === 'captured' ? 'ok' : it.stage === 'failed' || it.stage === 'unavailable' ? 'bad' : it.stage === 'claiming' || it.stage === 'capturing' || it.stage === 'reporting' ? 'warn' : it.pollingHealthy ? 'ok' : '');
-  setRow('Captures', `queued ${s.submissions.pending + s.submissions.submitting} · accepted (202) ${s.submissions.accepted} · failed ${s.submissions.failed} · total ${s.submissions.total} — acceptance ≠ memory completion; see server pipeline`,
-    s.submissions.failed ? 'bad' : '');
-  setRow('Transcripts', `posted ${s.transcripts.posted} · failed ${s.transcripts.failed} · dropped ${s.transcripts.dropped} · pending ${s.transcripts.pendingHttp} · identical revisions suppressed ${s.transcripts.suppressed}`, s.transcripts.failed ? 'warn' : '');
+  const now = Date.now();
+  const bl = s.backlog;
+  const photoAge = bl.oldestPhotoCapturedAt !== null ? now - bl.oldestPhotoCapturedAt : null;
+  setRow('Captures', `queued ${s.submissions.pending + s.submissions.submitting} · accepted (202) ${s.submissions.accepted} · failed ${s.submissions.failed} · total ${s.submissions.total} · backlog ${bl.photos} photo(s)${photoAge !== null ? `, oldest source ${fmtMs(photoAge)} old` : ''} — acceptance ≠ memory completion; see server pipeline`,
+    s.submissions.failed ? 'bad' : photoAge !== null && photoAge > 15_000 ? 'warn' : '');
+  const tAge = bl.oldestTranscriptReceivedAt !== null ? now - bl.oldestTranscriptReceivedAt : null;
+  setRow('Transcripts', `posted ${s.transcripts.posted} · failed ${s.transcripts.failed} · dropped ${s.transcripts.dropped} · pending ${s.transcripts.pendingHttp}${tAge !== null ? ` (oldest ${fmtMs(tAge)} old)` : ''} · identical revisions suppressed ${s.transcripts.suppressed}`, s.transcripts.failed || (tAge !== null && tAge > 10_000) ? 'warn' : '');
   setRow('Latency', `capture → 202: ${fmtMs(s.submissions.lastLatencyMs)} · face rtt ${fmtMs(s.face.lastRttMs)} · packet completion latency: server pipeline below`);
   const fc = s.finalCapture;
   setRow('Stop snapshot', fc.stage === 'not-started' ? 'taken once on Stop after the speech flush (covers late finals)' : `${fc.stage}${fc.id ? ` · ${short(fc.id)}` : ''} · ${fc.detail}`,
@@ -202,27 +210,34 @@ async function refreshDevices(): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  if (current) { await current.stop('replaced by a new Start'); }
-  transcripts.clear(); clear(ui.transcript);
-  const run = new Run({
-    videoEl: ui.video, config,
-    commands: { poll: (sid) => agentApi.commands(sid), claim: (id, sid) => agentApi.claim(id, sid), result: (id, body) => agentApi.result(id, body) },
-    liveFaces: (body) => agentApi.faces(body),
-    onUpdate: (s) => { if (run === current) renderSnapshot(s); },
-    onLiveFaces: (f) => { if (run === current) liveFaces = f; },
-    onTranscript: (t) => { if (run === current) onTranscript(t); },
+  if (runs.busy) return; // a Start is already being processed (previous Run stopping / new Run starting): never two Runs
+  ui.start.disabled = true; // immediately, before the previous Run's bounded Stop; renderSnapshot keeps it consistent afterwards
+  const started = await runs.start(() => {
+    transcripts.clear(); clear(ui.transcript); liveFaces = null;
+    const run: Run = new Run({
+      videoEl: ui.video, config,
+      commands: { poll: (sid) => agentApi.commands(sid), claim: (id, sid) => agentApi.claim(id, sid), result: (id, body) => agentApi.result(id, body) },
+      liveFaces: (body) => agentApi.faces(body),
+      onUpdate: (s) => { if (runs.owns(run)) renderSnapshot(s); },
+      onLiveFaces: (f) => { if (runs.owns(run)) liveFaces = f; },
+      onTranscript: (t) => { if (runs.owns(run)) onTranscript(t); },
+    });
+    return run;
+  }, async (run) => {
+    renderSnapshot(run.snapshot());
+    await run.start({ cameraId: ui.camera.value || null, micId: ui.mic.value || null, speechBackend: selectedSpeechBackend() });
   });
-  current = run;
-  renderSnapshot(run.snapshot());
-  await run.start({ cameraId: ui.camera.value || null, micId: ui.mic.value || null, speechBackend: selectedSpeechBackend() });
-  void refreshDevices(); // labels become available after the permission grant
+  if (started) void refreshDevices(); // labels become available after the permission grant
+  renderSnapshot(runs.run?.snapshot() ?? null);
 }
-async function stop(): Promise<void> { await current?.stop('stopped by user'); }
+async function stop(): Promise<void> { await runs.stop('stopped by user'); }
 
 ui.start.addEventListener('click', () => { void start(); });
 ui.stop.addEventListener('click', () => { void stop(); });
 ui.refresh.addEventListener('click', () => { void refreshDevices(); });
-window.addEventListener('pagehide', () => { void current?.stop('page hidden'); });
+// Leaving the page (navigation, tab close, iOS app switch/bfcache) stops the Run: camera and microphone are released and
+// nothing restarts by itself on return — recording resumes only with a fresh Start.
+window.addEventListener('pagehide', () => { void runs.stop('page hidden'); });
 
 // ---- dashboard (GET only; polled) -----------------------------------------------------------------------
 function renderState(d: Dashboard): void {
@@ -351,14 +366,20 @@ function renderDashboard(d: Dashboard): void {
   const lat = p?.latencies;
   const latText = Array.isArray(lat) ? lat.slice(-8).map((l) => `${l.stage} ${fmtMs(l.ms)}`).join(' · ') : lat ? Object.entries(lat).map(([k, v]) => `${k} ${fmtMs(v)}`).join(' · ') : '—';
   const obs = Array.isArray(p?.observing) ? p.observing.length : p?.observing ?? 0;
-  setText(ui.pipeline, p ? `running ${String(p.running ?? '?')} · queue ${p.queue ?? '?'} · observing ${obs} · reducing ${p.reducing ?? 'none'} · indexing ${String(p.indexing ?? '?')} · last error: ${p.lastError ?? 'none'} · recent latencies: ${latText} · stats: ${d.stats ? Object.entries(d.stats).map(([k, v]) => `${k}=${String(v)}`).join(' ') : '—'}`
+  // Outcomes, not just queue length: a shrinking queue can mean failures. Failed rows stay counted until repaired.
+  const failed = typeof p?.failed === 'number' ? p.failed : null;
+  const outcome = p ? `failed ${failed ?? '?'}${failed ? ' (old failures persist until repaired; raw photos/transcripts stay saved)' : ''} · committed ${p.committed ?? '?'} · accepted ${p.accepted ?? '?'}` : '';
+  const memAge = typeof p?.latestMemoryAgeMs === 'number' ? `derived memory source ${fmtMs(p.latestMemoryAgeMs)} old` : p && p.latestMemoryAgeMs === null ? 'no derived memory yet' : '';
+  const oldestPending = typeof p?.oldestPendingMs === 'number' && p.oldestPendingMs > 0 ? ` (oldest waiting ${fmtMs(p.oldestPendingMs)})` : '';
+  setText(ui.pipeline, p ? `${outcome}${memAge ? ` · ${memAge}` : ''} · running ${String(p.running ?? '?')} · queue ${p.queue ?? '?'}${oldestPending} · observing ${obs} · reducing ${p.reducing ?? 'none'} · indexing ${String(p.indexing ?? '?')} · last error: ${p.lastError ?? 'none'} · recent latencies: ${latText} · stats: ${d.stats ? Object.entries(d.stats).map(([k, v]) => `${k}=${String(v)}`).join(' ') : '—'}`
     : 'pipeline status not reported');
+  ui.pipeline.className = `mono small ${failed ? 'bad' : p?.lastError ? 'warn' : ''}`;
 }
-async function pollDashboard(): Promise<void> {
+const pollDashboard = singleFlight(async (): Promise<void> => { // never two dashboard GETs in flight (8 s timeout vs 3 s interval)
   try { renderDashboard(await api.dashboard()); setText(ui.dashNote, `dashboard refreshed ${fmtTime(Date.now())} (GET only, every 3 s)`); }
   catch (e) { setText(ui.dashNote, `dashboard unavailable: ${msg(e)}`); }
   await pollPeople();
-}
+});
 
 // ---- people (GET polled; DELETE only after an explicit confirmation; nothing cleared before the server confirms) ----
 const DELETE_SCOPE = 'Removes this person’s recognition and profile and hides their person-linked memories from active retrieval. Source photos and transcripts are retained.';
@@ -421,7 +442,7 @@ async function pollPeople(): Promise<void> {
 /** Server confirmed a deletion: discard live labels now and recycle the face connection; camera and speech keep running. */
 function afterPeopleDeleted(what: string): void {
   liveFaces = null;
-  current?.resetFaces(what);
+  runs.run?.resetFaces(what);
   setText(ui.peopleActionNote, `${what} · server confirmed · live face labels discarded and the face connection is recycling · ${DELETE_SCOPE}`);
   void pollPeople();
 }
@@ -488,43 +509,61 @@ const stream = new NotificationStream({
   onError: (m) => pageError(`agent stream: ${m}`),
 });
 function renderAgentStatus(): void {
-  const v = describeAgentConnection(agentStatus, agentStatusError, streamState);
+  const v = describeAgentConnection(agentStatus, agentStatusError, streamState, Date.now());
   setText(ui.agentStatus, `${v.text}${notifications.duplicates ? ` · duplicate deliveries ignored ${notifications.duplicates}` : ''}`);
   ui.agentStatus.className = `note mono ${v.tone}`;
 }
-async function pollAgentStatus(): Promise<void> {
+const pollAgentStatus = singleFlight(async (): Promise<void> => {
   try { agentStatus = await agentApi.status(); agentStatusError = null; }
   catch (e) { agentStatusError = msg(e); }
   renderAgentStatus();
-}
-async function loadNotifications(): Promise<void> {
+});
+const loadNotifications = singleFlight(async (): Promise<void> => {
   try {
     const r = await agentApi.notifications();
     let added = 0;
     for (const raw of r.notifications ?? []) { const n = parseNotification(raw, Date.now()); if (n && notifications.add(n)) added += 1; }
     if (added || !notificationsSig) renderNotifications();
   } catch (e) { setText(ui.agentNote, `notifications unavailable: ${msg(e)}`); }
+});
+/**
+ * Acknowledge on the server, then locally. Used by the Ack button, by opening a notification (click/`?notification=`)
+ * and by a push that the service worker delivered while this page was visible and focused. Never from SSE arrival.
+ */
+const acksInFlight = new Set<string>();
+async function ackNotification(id: string, reason: string, onError?: (m: string) => void, closeBanner = true): Promise<boolean> {
+  const known = notifications.get(id);
+  if (known?.acked || acksInFlight.has(id)) return Boolean(known?.acked);
+  acksInFlight.add(id);
+  try {
+    const r = await agentApi.ack(id);
+    if (!r || r.acked !== true) throw new Error('server did not confirm the ack');
+    notifications.ack(id, reason); notificationsSig = ''; renderNotifications();
+    if (closeBanner) void closeSystemNotification(id);
+    return true;
+  } catch (e) { onError?.(msg(e)); if (!onError) pageError(`ack ${short(id, 8)} (${reason}) failed: ${msg(e)}`); return false; }
+  finally { acksInFlight.delete(id); }
 }
+const openedIds = new Set<string>();
 function notificationRow(n: AgentNotification): HTMLElement {
   const ack = el('button', { type: 'button', class: 'quiet tiny' }, 'Ack');
   const status = el('span', { class: 'meta' });
   ack.addEventListener('click', () => {
     ack.disabled = true; setText(status, 'acking…');
-    agentApi.ack(n.id).then((r) => {
-      if (!r || r.acked !== true) throw new Error('server did not confirm the ack');
-      notifications.ack(n.id); renderNotifications();
-    }).catch((e) => { ack.disabled = false; setText(status, `ack failed: ${msg(e)}`); });
+    void ackNotification(n.id, 'Ack button', (m) => { ack.disabled = false; setText(status, `ack failed: ${m}`); });
   });
   const refs = n.refs.map((r) => refView(r));
-  return el('li', { class: n.acked ? 'acked' : '' },
+  return el('li', { class: `${n.acked ? 'acked' : ''}${openedIds.has(n.id) ? ' opened' : ''}` },
     el('div', { class: 'text' }, n.text || '(empty answer)'),
     refs.length ? el('div', { class: 'meta refs' }, ...refs.map((r) => (r.href ? link(r.href, r.label) : el('span', null, `${r.label} `)))) : null,
     el('div', { class: 'row meta' }, `${n.createdAt ? fmtDateTime(n.createdAt) : `received ${fmtTime(n.receivedAt)}`}${n.taskId ? ` · task ${short(n.taskId, 8)}` : ''} · id ${short(n.id, 8)}`,
-      n.acked ? el('span', null, 'acked') : ack, status));
+      n.pushAt !== null ? el('span', { class: 'via' }, `push ${fmtTime(n.pushAt)}`) : null,
+      openedIds.has(n.id) ? el('span', null, 'opened from notification') : null,
+      n.acked ? el('span', null, n.ackReason ? `acked (${n.ackReason})` : 'acked') : ack, status));
 }
 function renderNotifications(): void {
   const list = notifications.list();
-  const sig = list.map((n) => `${n.id}:${n.acked ? 1 : 0}`).join('|');
+  const sig = list.map((n) => `${n.id}:${n.acked ? 1 : 0}:${n.pushAt ?? ''}:${openedIds.has(n.id) ? 1 : 0}`).join('|');
   if (sig === notificationsSig) return;
   notificationsSig = sig || 'empty';
   replaceChildren(ui.agentNotifications, list.length ? list.map(notificationRow) : [el('li', { class: 'empty' }, 'no agent answers yet')]);
@@ -546,7 +585,7 @@ function taskRow(t: AgentTask): HTMLElement {
     result ? el('div', { class: 'meta text' }, `result: ${result}`) : null,
     el('div', { class: 'meta' }, `id ${short(t.id, 8)}${typeof t.updatedAt === 'number' ? ` · updated ${fmtTime(t.updatedAt)}` : typeof t.createdAt === 'number' ? ` · created ${fmtTime(t.createdAt)}` : ''}`));
 }
-async function pollTasks(): Promise<void> {
+const pollTasks = singleFlight(async (): Promise<void> => {
   try {
     const r = await agentApi.tasks();
     agentTasks = Array.isArray(r.tasks) ? r.tasks.filter((t) => t && typeof t.id === 'string') : [];
@@ -558,7 +597,7 @@ async function pollTasks(): Promise<void> {
     const rows = [...active, ...agentTasks.filter((t) => !isActiveTask(t.status))].slice(0, 20);
     replaceChildren(ui.agentTasks, rows.length ? rows.map(taskRow) : [el('li', { class: 'empty' }, 'no tasks')]);
   } catch (e) { setText(ui.agentTasksSummary, `Tasks (unavailable: ${msg(e)})`); }
-}
+});
 ui.agentForm.addEventListener('submit', (ev) => {
   ev.preventDefault();
   const text = ui.agentInput.value.trim();
@@ -575,12 +614,78 @@ ui.agentForm.addEventListener('submit', (ev) => {
     .finally(() => { ui.agentSend.disabled = false; });
 });
 
-// ---- PWA: manifest + network-first shell service worker (never caches API/media) ------------------------------
+// ---- PWA: manifest + network-first shell service worker (never caches API/media) + Web Push ----------------------
+let swRegistration: Promise<ServiceWorkerRegistration | null> = Promise.resolve(null);
 function registerServiceWorker(): void {
   if (!('serviceWorker' in navigator)) { setText(ui.pwaNote, 'Install: service worker unsupported here.'); return; }
-  navigator.serviceWorker.register('/sw.js').then((reg) => setText(ui.pwaNote, `Installable (shell cached, scope ${new URL(reg.scope).pathname}); API and media are never cached; phone push/hardware not verified.`))
-    .catch((e) => setText(ui.pwaNote, `Service worker registration failed: ${msg(e)}`));
+  swRegistration = navigator.serviceWorker.register('/sw.js').then(async (reg) => {
+    setText(ui.pwaNote, `Installable (shell cached, scope ${new URL(reg.scope).pathname}); API and media are never cached; push shows here only after a test arrives; iOS background delivery is not verified.`);
+    await navigator.serviceWorker.ready;
+    return reg;
+  }).catch((e) => { setText(ui.pwaNote, `Service worker registration failed: ${msg(e)}`); return null; });
+  // The worker tells open pages about push arrivals and notification clicks; the page never shows system notifications itself.
+  navigator.serviceWorker.addEventListener('message', (ev) => {
+    const m = parseWorkerMessage(ev.data);
+    if (!m) return;
+    if (m.type === 'push') {
+      if (!notifications.markPush(m.id, Date.now())) { const n = parseNotification({ id: m.id, text: m.text }, Date.now()); if (n) { n.pushAt = Date.now(); notifications.add(n); } }
+      notificationsSig = ''; renderNotifications();
+      if (!m.displayed) pageError(`push ${short(m.id, 8)}: the service worker could not display the system notification`);
+      // Displayed in the foreground = acknowledged. The worker judged the window visible+focused; the page re-checks before acking.
+      // The banner itself is left alone (the OS showed it; the user may still tap it) — only Ack/open close banners.
+      if (m.foreground && document.visibilityState === 'visible' && document.hasFocus()) void ackNotification(m.id, 'displayed in the foreground via push', undefined, false);
+      return;
+    }
+    if (m.id) openNotification(m.id, 'opened from notification click');
+  });
 }
+/** A notification was opened (system notification click or `?notification=` URL): highlight the row and acknowledge it. */
+function openNotification(id: string, reason: string): void {
+  openedIds.add(id); notificationsSig = ''; renderNotifications();
+  void ackNotification(id, reason);
+  ui.agentNotifications.scrollIntoView?.({ block: 'nearest' });
+}
+async function closeSystemNotification(id: string): Promise<void> {
+  const reg = await swRegistration;
+  if (!reg?.getNotifications) return;
+  try { for (const n of await reg.getNotifications({ tag: `${NOTIFICATION_TAG_PREFIX}${id}` })) n.close(); } catch { /* not permitted here */ }
+}
+
+const push = new PushController({
+  env: () => readPushEnvironment(window),
+  registration: async () => (await swRegistration) as unknown as import('./push.ts').PushRegistrationLike | null,
+  api: { key: () => agentApi.pushKey(), subscribe: (json) => agentApi.pushSubscribe(json), unsubscribe: (endpoint) => agentApi.pushUnsubscribe(endpoint), status: () => agentApi.pushStatus(), test: () => agentApi.pushTest() },
+  clock: realClock, onState: renderPush,
+});
+function renderPush(p: PushState): void {
+  const tone = p.stage === 'subscribed' && !p.lastError ? 'ok' : p.stage === 'denied' || p.stage === 'error' || p.lastError ? 'bad' : p.stage === 'unsupported' ? 'warn' : '';
+  setText(ui.pushStatus, `notifications: ${p.stage}${p.busy ? ' (working…)' : ''} · permission ${p.permission} · ${p.message}${p.lastError && p.lastError !== p.message ? ` · error: ${p.lastError}` : ''}`);
+  ui.pushStatus.className = `note mono ${tone}`;
+  setText(ui.pushGuidance, p.guidance);
+  // Enable is clickable only once the key + registration are cached: the click then calls pushManager.subscribe() directly.
+  const canEnable = p.support.kind === 'supported' && p.prepared && !p.subscribed && !p.busy;
+  ui.pushEnable.disabled = !canEnable; ui.pushEnable.hidden = p.subscribed;
+  ui.pushEnable.textContent = p.stage === 'denied' ? 'Enable notifications (blocked — allow in settings first)' : p.prepared || p.support.kind !== 'supported' ? 'Enable notifications' : 'Enable notifications (preparing…)';
+  ui.pushPrepare.hidden = !(p.support.kind === 'supported' && !p.prepared && !p.busy && p.stage !== 'preparing'); ui.pushPrepare.disabled = p.busy;
+  ui.pushDisable.hidden = !p.subscribed; ui.pushDisable.disabled = p.busy;
+  ui.pushTest.hidden = !p.subscribed; ui.pushTest.disabled = p.busy;
+  const d = p.delivery;
+  setText(ui.pushDelivery, p.support.kind !== 'supported' ? '' : !p.subscribed ? (p.deliveryError ? `agent push status unavailable: ${p.deliveryError}` : '')
+    : `${d ? `agent push: ${d.subscriptions} device(s) · pending ${d.pending} · sent ${d.sent} · failed ${d.failed}` : 'agent push counters not loaded'}${p.deliveryAt ? ` · checked ${fmtTime(p.deliveryAt)}` : ''}${p.deliveryError ? ` · status error: ${p.deliveryError}` : ''}${p.lastTest ? ` · last test ${p.lastTest.id} queued ${fmtTime(p.lastTest.at)}` : ''} · "sent" = accepted by the push service, not proof the OS displayed it; background receipt needs a real iPhone test`);
+}
+ui.pushEnable.addEventListener('click', () => { void push.enable(); }); // subscribe() runs synchronously inside this handler
+ui.pushPrepare.addEventListener('click', () => { void push.prepare(); });
+ui.pushDisable.addEventListener('click', () => { void push.disable(); });
+ui.pushTest.addEventListener('click', () => { void push.sendTest(); });
+ui.pushClear.addEventListener('click', () => { push.clearStatus(); pageErrors.length = 0; renderSnapshot(lastSnapshot); });
+
+// Back in the foreground: reopen a silently dropped stream now, and catch up on anything missed while hidden (ids dedupe).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  stream.wake();
+  void loadNotifications(); void pollAgentStatus(); void pollTasks();
+  if (push.snapshot.subscribed) void push.refreshDelivery();
+});
 
 // ---- boot -----------------------------------------------------------------------------------------------
 function pageError(m: string): void { pageErrors.push(m); if (pageErrors.length > 20) pageErrors.shift(); renderSnapshot(lastSnapshot); }
@@ -602,5 +707,11 @@ async function boot(): Promise<void> {
   setInterval(() => { void pollAgentStatus(); void pollTasks(); }, 2500);
   setInterval(() => { void loadNotifications(); }, 15000); // safety net if the stream misses an event; ids dedupe
   registerServiceWorker();
+  void push.prepare(); // caches key + registration and re-syncs an existing subscription; never prompts — only Enable does
+  const opened = notificationIdFromSearch(location.search);
+  if (opened) { // the service worker opened this page from a notification click
+    openNotification(opened, 'opened from notification');
+    const url = new URL(location.href); url.searchParams.delete('notification'); history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  }
 }
 void boot();

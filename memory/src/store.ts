@@ -531,21 +531,22 @@ export class Store {
 
   /** Literal word overlap for writer context; results are candidates, never identity proof. */
   contextNotes(texts: string[], limit = 24): SearchHit[] {
-    const terms = [...new Set(texts.flatMap(text => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
-      .filter(term => term.length >= 3))];
+    const terms = [...new Set(texts.flatMap(text => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []))];
     if (!terms.length) return [];
     const { sql, args } = this.filterSql({});
-    const hits = new Map<string, SearchHit>();
+    const hits = new Map<string, { note: SearchHit; score: number }>();
     // Bound the MATCH expression while letting every source (including later rows) participate.
     for (let offset = 0; offset < terms.length; offset += 128) {
       const query = terms.slice(offset, offset + 128).map(term => `"${term}"`).join(' OR ');
-      const rows = this.db.prepare(`SELECT o.* FROM observation_text
+      const rows = this.db.prepare(`SELECT o.*,rank AS lexical_rank FROM observation_text
         JOIN observations o ON o.rowid=observation_text.rowid
         WHERE observation_text MATCH ? AND ${sql}
         ORDER BY rank,o.observed_at DESC LIMIT ?`).all(query, ...args, boundedLimit(limit, 24)) as Row[];
-      for (const row of rows) hits.set(String(row.id), { ...this.observation(row), distance: 0 });
+      for (const row of rows) hits.set(String(row.id), { note: { ...this.observation(row), distance: 0 },
+        score: (hits.get(String(row.id))?.score ?? 0) + Number(row.lexical_rank) });
     }
-    return [...hits.values()].slice(0, boundedLimit(limit, 24));
+    return [...hits.values()].sort((a, b) => a.score - b.score || b.note.observedAt - a.note.observedAt)
+      .slice(0, boundedLimit(limit, 24)).map(hit => hit.note);
   }
 
   currentObservation(id: string): Observation | null {

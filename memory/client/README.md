@@ -27,13 +27,31 @@ reconnect), SSE wrapper, ref → same-origin link, task/status helpers · `liveF
 stable identity-set changes incl. unknown/no-face, ≤ 1-per-3 s heartbeat, one POST in flight, latest-only pending,
 stale (> 4 s) dropped, no replay after failure, Stop ends it) · `searchMode.ts` keyword-default / semantic
 search body · `people.ts` People ordering (enrolled first, then most recently seen; all rows rendered) +
-person-specific Delete labels · `main.ts` DOM incl. the compact Agent section (status, ask, answers + Ack, tasks +
-Cancel), People list with confirmed DELETE /api/people[/:id], the plain-language introduction line
-(`summarizeIntroduction`) and service-worker registration (`public/sw.js`, network-first shell only).
+person-specific Delete labels · `push.ts` Web Push (support classification incl. HTTPS/iOS-Home-Screen/denied
+guidance, `PushController`: `prepare()` on load/Retry caches GET /api/agent/push/key + the ready registration, drops a
+rotated-key subscription and re-syncs an existing one; `enable()` calls `pushManager.subscribe()` **synchronously from
+the click** (Safari user-activation rule; the browser prompts there) then POSTs /api/agent/push/subscriptions with
+rollback; Disable = unsubscribe + DELETE {endpoint}; test push; delivery counters; service-worker message parsing;
+`?notification=` id) ·
+`runControl.ts` `RunSwitcher` (exactly one Run per Start, a Start during a switch is ignored) + `singleFlight` polls ·
+`main.ts` DOM incl. the compact Agent section (status with last-event age, ask, answers + Ack + push marker/ack
+reason, tasks + Cancel), the Notifications block (Enable/Disable/Send test push/Clear status), People list with
+confirmed DELETE /api/people[/:id], the plain-language introduction line (`summarizeIntroduction`), backlog source
+age in the Captures/Transcripts rows, visibility wake of the SSE stream, and service-worker registration.
+
+`public/sw.js`: network-first shell only (never `/api/*`, `/ws/*`, `/v1/*`, `/static/*`, `/sw.js`) + `push`
+(payload validation, EVERY push calls showNotification — WebKit rule — with one tag per id and `renotify:false` so a
+repeat replaces the banner instead of alerting again; nothing is suppressed client-side; same-origin `url`; posts
+`kawk-push {…, duplicate, displayed}` to open windows after the display settled) + `notificationclick` (focus an existing KAWK window and post `kawk-notification-open`
+— no reload — else `openWindow('/?notification=<id>')`). The page never shows system notifications itself. Opening a
+notification (click / `?notification=`) or a push displayed while the page is visible+focused acknowledges it;
+SSE arrival never does.
 
 Browser QA (no camera, isolated mock server on a random port; needs `../agent/node_modules/playwright`):
 
 ```sh
-node client/qa/browserQa.mjs        # 27 checks, screenshots in /tmp/kawk-merged-ui-qa/
+node client/qa/browserQa.mjs        # 52 checks (incl. Web Push with a fake PushManager + CDP-injected push events into the
+                                    # real service worker; needs the full Chromium channel for notification permission),
+                                    # screenshots in /tmp/kawk-merged-ui-qa/
 node client/qa/mockServer.mjs       # standalone mock of the memory+agent HTTP contract
 ```
