@@ -70,7 +70,9 @@ video = { w = 640, h = 480, fps = 15, quality = 70 }
 audio = { chunk_ms = 40 }
 
 [devices.pi]
-video = { w = 640, h = 480, fps = 15, quality = 70 }
+# Pi 4 hardware MJPEG encoder handles 720p24 easily; the hotspot WiFi (~17 Mbit/s at
+# this setting) is the ceiling — 1080p24 (~37 Mbit/s) works on good WiFi, flip w/h.
+video = { w = 1280, h = 720, fps = 24, quality = 70 }
 audio = { chunk_ms = 40 }
 
 [devices.esp32]
