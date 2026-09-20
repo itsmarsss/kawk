@@ -45,11 +45,22 @@ _PAGE = """<!doctype html>
   .panel h2 {{ font-size:13px; margin:0 0 8px; color:#94a3c0; text-transform:uppercase; }}
   pre {{ margin:0; white-space:pre-wrap; font-size:12px; }}
   .card {{ font-size:16px; }} .card b {{ color:#a6e3a1; }}
+  .toolbar {{ margin-top:8px; display:flex; gap:8px; }}
+  button {{ background:#1e2433; color:#cdd6f4; border:1px solid #45475a; border-radius:6px;
+           padding:6px 14px; font:inherit; cursor:pointer; }}
+  button:hover {{ background:#2a3145; }}
+  button.on {{ background:#2b3a55; border-color:#89b4fa; color:#89b4fa; }}
 </style></head>
 <body>
 <h1>{name} — hub dashboard</h1>
 <div class="row">
-  <div><img src="/stream" alt="camera feed"></div>
+  <div>
+    <img id="feed" src="/stream" alt="camera feed">
+    <div class="toolbar">
+      <button id="flipH">flip ↔</button>
+      <button id="flipV">flip ↕</button>
+    </div>
+  </div>
   <div>
     <div class="panel"><h2>display now</h2><div class="card" id="card">—</div></div>
     <br>
@@ -59,6 +70,18 @@ _PAGE = """<!doctype html>
   </div>
 </div>
 <script>
+// View-only flips (per-browser, persisted). For a physically upside-down rig,
+// flip at the SOURCE instead: rpi_device.py --hflip/--vflip (fixes perception too).
+const feed = document.getElementById('feed');
+let fx = +(localStorage.fx || 0), fy = +(localStorage.fy || 0);
+function applyFlip() {{
+  feed.style.transform = `scale(${{fx ? -1 : 1}}, ${{fy ? -1 : 1}})`;
+  document.getElementById('flipH').classList.toggle('on', !!fx);
+  document.getElementById('flipV').classList.toggle('on', !!fy);
+}}
+document.getElementById('flipH').onclick = () => {{ fx ^= 1; localStorage.fx = fx; applyFlip(); }};
+document.getElementById('flipV').onclick = () => {{ fy ^= 1; localStorage.fy = fy; applyFlip(); }};
+applyFlip();
 async function poll() {{
   try {{
     const s = await (await fetch('/stats.json')).json();
