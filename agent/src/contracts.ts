@@ -136,6 +136,11 @@ export interface Notification {
   expiresAt: number;
   state: "pending" | "acked" | "withdrawn";
 }
+export interface ConversationContext {
+  speech: Evidence[];
+  replies: { id: string; taskId: string; goal: string; text: string; createdAt: number;
+    state: Notification["state"]; refs: EvidenceRef[] }[];
+}
 export interface GateInput {
   event: Evidence;
   context: Evidence[];
@@ -143,6 +148,7 @@ export interface GateInput {
   now?: number;
   timeZone?: string;
   previousTranscript?: Evidence;
+  conversation?: ConversationContext;
 }
 export interface Gate {
   bindPerson?(

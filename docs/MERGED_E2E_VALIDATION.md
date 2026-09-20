@@ -197,3 +197,39 @@ an existing browser run has reconnected all streams.
 iPhone selection, physical capture quality, installation and OS push
 banners remain device checks. Claude's UI and isolated browser results are in
 [the ambient UI report](AMBIENT_MEMORY_UI_VALIDATION.md).
+
+## Conversation continuity repair — September 20
+
+A live weather exchange exposed a context-selection failure. The wearer asked
+about the weather, the agent asked which city, then the wearer supplied a city.
+Jev treated that reply as a standalone fact (`remember=true`, `route=observe`),
+so the memory turn finished quietly instead of continuing the weather request.
+The mixed 12-event context had lost the preceding question to frequent face
+updates. The separate previous-transcript lookup supplied only a time gap, and
+completed agent clarification replies were absent from Jev's input.
+
+Jev and agent turns now receive a separate five-minute conversation window:
+12 current final utterances and four emitted replies, with timestamps, goals and
+valid source references. Speech cannot be evicted by face/camera traffic. Replies
+remain conversational context after task completion, acknowledgement or banner
+expiry; cancelled work and invalidated source claims stay excluded. A relevant
+answer to a completed clarification starts a new assist turn. Unrelated speech
+and camera events must not replay old requests. No route threshold was lowered.
+
+Regression tests cover 80 intervening face events, source-time boundaries,
+owner isolation, transcript revisions/deletion, expired/acknowledged replies,
+Jev request construction, agent handoff and content-free telemetry. **90 agent
+tests and 443 Python tests passed**. New telemetry records speech/reply references
+and the route decision, not transcript content.
+
+The initial live replay exposed ambiguity between remembering a personal fact
+and acting on a clarification. After correcting the route instructions and
+criteria, the final real-Jev replay passed **6/6**: full and bare city answers,
+reminder-time answer, unrelated speech, camera traffic and an unprompted personal
+fact. Classification took **741–750 ms** in that concurrent replay; this is not
+an end-to-end microphone benchmark. An isolated real Jev → OpenAI → delivery-review
+test also continued a bill-splitting clarification and correctly produced
+`$84 ÷ 7 = $12` in **5.13 seconds**, citing both utterances. Its notification stayed
+in the isolated test store; no real user task or device push was created.
+Private replay evidence lives under `.context/merged-demo/` in the space:
+`jev-conversation-live.json` and `conversation-agent-live.json`.

@@ -6,6 +6,7 @@ import {
   EventSchema,
   parseJSON,
   type ChatMessage,
+  type ConversationContext,
   type Decision,
   type Evidence,
   type EvidenceRef,
@@ -77,6 +78,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS task_queue ON tasks(status,created_at);
       CREATE TABLE IF NOT EXISTS dependencies(kind TEXT, subject_id TEXT, owner TEXT, event_id TEXT, revision INTEGER, PRIMARY KEY(kind,subject_id,owner,event_id,revision));
       CREATE INDEX IF NOT EXISTS dependency_source ON dependencies(owner,event_id,revision);
+      CREATE INDEX IF NOT EXISTS evidence_conversation ON evidence(owner,json_extract(payload,'$.kind'),json_extract(payload,'$.sourceEnd')) WHERE deleted=0;
       CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, owner TEXT, key TEXT, version INTEGER, text TEXT, kind TEXT, refs TEXT, created_at INTEGER, active INTEGER NOT NULL DEFAULT 1, UNIQUE(owner,key,version));
       CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(owner UNINDEXED, event_id UNINDEXED, revision UNINDEXED, text);
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(owner UNINDEXED, memory_id UNINDEXED, text);
@@ -378,6 +380,25 @@ export class Store {
       event.sourceStart,
     );
     return row ? this.decode(row) : undefined;
+  }
+  /** Speech and emitted replies have their own budget: camera/face traffic cannot evict a conversation. */
+  conversation(owner: string, before = this.now(), window = 300000): ConversationContext {
+    const speech = this.all<EvidenceRow>(`SELECT e.* FROM evidence e WHERE e.owner=? AND e.deleted=0
+      AND json_extract(e.payload,'$.kind')='transcript' AND json_extract(e.payload,'$.final')=1
+      AND json_extract(e.payload,'$.sourceEnd') BETWEEN ? AND ?
+      AND e.revision=(SELECT MAX(revision) FROM evidence WHERE owner=e.owner AND id=e.id)
+      ORDER BY json_extract(e.payload,'$.sourceEnd') DESC,e.id DESC LIMIT 12`, owner, before - window, before)
+      .map(row => { const e = this.decode(row); return { ...e, text: e.text.slice(0, 2000), words: undefined }; }).reverse();
+    // Expiry withdraws a banner, not the fact that we asked a question. Invalidated sources and cancelled work stay out.
+    const replies = this.all<{ id: string; task_id: string; goal: string; text: string; created_at: number;
+      state: Notification["state"]; refs: string }>(`SELECT n.*,t.goal FROM notifications n JOIN tasks t ON t.id=n.task_id
+      WHERE n.owner=? AND t.owner=n.owner AND t.parent_id IS NULL
+      AND t.status NOT IN ('cancelled','superseded','failed') AND n.created_at BETWEEN ? AND ?
+      ORDER BY n.created_at DESC,n.id DESC LIMIT 12`, owner, before - window, before)
+      .filter(row => this.valid(owner, JSON.parse(row.refs))).slice(0, 4).reverse()
+      .map(row => ({ id: row.id, taskId: row.task_id, goal: row.goal.slice(0, 1000), text: row.text.slice(0, 2000),
+        createdAt: row.created_at, state: row.state, refs: JSON.parse(row.refs) }));
+    return { speech, replies };
   }
   transcripts(
     owner: string,

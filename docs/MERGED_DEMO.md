@@ -159,7 +159,7 @@ The older standalone agent page is not the primary capture interface.
 
 ## Checkpoint verification
 
-Current checks: **443 Python, 88 agent, 297 memory and 123 client tests passed**, plus
+Current checks: **443 Python, 90 agent, 297 memory and 123 client tests passed**, plus
 **102 isolated browser checks**. This includes
 outbox outage/restart and rollback behavior, transcript revisions, same gallery IDs,
 fresh-camera claim/session/expiry checks, stale-source rejection, and recovery from

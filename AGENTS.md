@@ -76,6 +76,12 @@ inspiration is allowed; **do not copy its implementation**. See
   later face result, or receipt time for capture time. Keep timing uncertainty,
   audio gaps, transcript boundaries and unknown speakers explicit.
 - Jev receives source time, arrival age, local time and the gap since prior speech.
+  Reserve a separate conversation window (latest 12 final utterances and four
+  emitted agent replies within five minutes), independent of camera/face traffic.
+  A completed clarification turn does not end a conversation; a relevant answer
+  starts follow-up work when the original task is no longer active. Context alone
+  must not replay an old request. Keep source/owner/revision validation and log
+  context references plus decisions without logging transcript text.
   Use Temporal for timezone/DST arithmetic. A timezone is not physical location;
   do not infer Toronto from `America/Toronto`.
 - Five-second capture cadence is not five-second delivery. Show backlog/source age,
@@ -224,7 +230,7 @@ image interpretation, browser file work and cancellation with controlled inputs.
 Local speech used generated PCM; local face verification used an existing recorded
 gallery image without changing the gallery. Neither proves worn-device accuracy.
 
-Current checks: **443 Python, 88 agent, 297 memory and 123 client tests**;
+Current checks: **443 Python, 90 agent, 297 memory and 123 client tests**;
 **102 isolated browser checks** and the earlier **12/12 real-provider fixture replay**.
 The merged push route also sent a test accepted by the existing browser's real
 FCM endpoint. That verifies the push service, not an observed device banner.

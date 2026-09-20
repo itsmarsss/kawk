@@ -349,23 +349,30 @@ export class Harness implements ToolHost {
         this.store.run("UPDATE gate_jobs SET state='superseded' WHERE id=?", job.id);
         return;
       }
+      const conversation = this.store.conversation(job.owner, event.sourceEnd);
+      const context = this.store.recent(job.owner, event.sourceEnd);
+      const previousTranscript = this.store.previousTranscript(job.owner, event);
       const decision = await this.telemetry.span(
         "jev.classify",
-        { eventId: event.id, queueMs: this.store.now() - event.receivedAt },
+        { eventId: event.id, queueMs: this.store.now() - event.receivedAt,
+          speechRefs: conversation.speech.map(refOf), replyIds: conversation.replies.map(r => r.id),
+          previousTranscriptId: previousTranscript?.id ?? null },
         () =>
           this.options.gate.decide(
             {
               event,
-              context: this.store.recent(job.owner, event.sourceEnd),
+              context,
+              conversation,
               tasks: this.store.tasks(job.owner, true),
               now: this.store.now(),
               timeZone: this.timeZone,
-              previousTranscript: this.store.previousTranscript(job.owner, event),
+              previousTranscript,
             },
             signal,
           ),
       );
       signal.throwIfAborted();
+      this.telemetry.emit('jev.decision', { eventId: event.id, jobId: job.id, ...decision });
       let cameraRequest: unknown;
       if (decision.captureNow && this.scene && decision.route === "start" && this.store.gateCurrent(job)) {
         try { cameraRequest = await this.scene.requestCamera(`jev-${job.id}`, event.text, event.deviceId, signal); }
@@ -394,7 +401,6 @@ export class Harness implements ToolHost {
           const active = this.store.tasks(job.owner, true).filter((t) => !t.parentId);
           if (active.length >= 16) throw new Error("Task queue full");
           const mode = decision.act && decision.route === "start" ? "assist" : "memory";
-          const context = this.store.recent(job.owner, event.sourceEnd).filter((e) => e.final);
           const task = this.store.createTask({
             id: `gate-${job.id}`,
             owner: job.owner,
@@ -418,6 +424,7 @@ export class Harness implements ToolHost {
                 mode,
                 trigger: event,
                 decision,
+                conversation,
                 cameraRequest,
                 clock: currentTime(this.store.now(), this.timeZone),
               }),

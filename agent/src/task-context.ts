@@ -29,6 +29,7 @@ export class TaskContext {
           refs: this.store.refs("task", t.id).slice(0, 8),
         })),
       reminders,
+      conversation: this.store.conversation(task.owner),
       facts: this.store.all(
         "SELECT key,substr(text,1,800) text,refs FROM memories WHERE owner=? AND active=1 ORDER BY created_at DESC LIMIT 12",
         task.owner,
