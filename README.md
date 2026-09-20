@@ -68,5 +68,13 @@ is a hackathon prototype.
 ## Dashboard
 
 `make hub` also serves **http://127.0.0.1:8090** — live camera feed (MJPEG), per-device
-fps/frame stats, the current display card, and recent display actions. Pin one device
-with `/stream?device=<id>`. Config under `[dashboard]` in remember.toml.
+fps/frame stats, the current display card, and recent display actions — plus testing
+controls: flip the view (↔/↕, per-browser), snapshot (`/frame.jpg`), and **live device
+config push** (resolution / fps / quality → `/control` → hub pushes a §5 config message
+→ the Pi restarts its camera pipeline in ~2 s, no service restarts). Pin one device with
+`/stream?device=<id>`. Source-side flips for a physically rotated rig:
+`rpi_device.py --hflip/--vflip`. Config under `[dashboard]` in remember.toml.
+
+Measured on the rig: 720p24 holds (~14 Mbit/s); 1080p24 produces real 1080p frames but
+the hotspot caps throughput → ~12 fps and TCP misery. The hardware encoder is not the
+limit — the venue WiFi is. Stay at 720p24 unless on good WiFi.
