@@ -201,6 +201,7 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
         sent = 0
         t_report = time.monotonic()
         interval = 1.0 / max(1, int(video_cfg["fps"]))
+        next_send = time.monotonic()
         while True:
             jpeg = camera.latest()
             if jpeg is not None:
@@ -210,7 +211,13 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
             if time.monotonic() - t_report >= 5.0:
                 print(f"[rpi] {sent / (time.monotonic() - t_report):.1f} fps sent")
                 sent, t_report = 0, time.monotonic()
-            await asyncio.sleep(interval)
+            # Deadline pacing: sleep to the NEXT slot so send time doesn't eat the period.
+            next_send += interval
+            delay = next_send - time.monotonic()
+            if delay < -1.0:  # fell far behind (WiFi stall): reset instead of spiraling
+                next_send = time.monotonic()
+                delay = 0.0
+            await asyncio.sleep(max(0.001, delay))
     finally:
         recv.cancel()
 
