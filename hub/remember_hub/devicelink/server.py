@@ -186,6 +186,18 @@ class DeviceLinkServer:
         if msg["type"] == "ping":
             await session.ws.send(json.dumps({"type": "pong"}))
 
+    async def push_config(self, device_id: str, video: dict[str, Any]) -> None:
+        """Runtime config push (dashboard testing controls) — same §5 config message
+        devices already honor at connect."""
+        session = self.devices.get(device_id)
+        if session is None:
+            raise KeyError(f"no such device: {device_id}")
+        session.config = {**session.config, "video": video}
+        await session.ws.send(
+            wire.make_config(video, session.config.get("audio", {"chunk_ms": 40}))
+        )
+        log.info("pushed config to %s: %s", device_id, video)
+
     # ---- display fan-out (decoupled from the decision cascade) -----------------
 
     async def on_display(self, action: DisplayAction) -> None:

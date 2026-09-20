@@ -8,7 +8,10 @@ slots, so it adds no capture path and can never back-pressure the pipeline
 Endpoints:
   GET /            the dashboard page
   GET /stream      MJPEG of the newest frame across devices (?device=<id> to pin)
+  GET /frame.jpg   single latest frame (snapshot)
   GET /stats.json  devices, current display, recent display actions
+  GET /control?device=<id>&w=&h=&fps=&quality=   push video config to a device
+                   (GET-with-params on purpose: local testing surface, tiny server)
 """
 
 from __future__ import annotations
@@ -59,6 +62,23 @@ _PAGE = """<!doctype html>
     <div class="toolbar">
       <button id="flipH">flip ↔</button>
       <button id="flipV">flip ↕</button>
+      <button onclick="window.open('/frame.jpg','_blank')">snapshot</button>
+    </div>
+    <div class="panel toolbar" style="margin-top:12px; align-items:center; flex-wrap:wrap;">
+      <select id="res">
+        <option value="640x480">640×480</option>
+        <option value="1280x720" selected>1280×720</option>
+        <option value="1920x1080">1920×1080</option>
+      </select>
+      <select id="fps">
+        <option>5</option><option>10</option><option>15</option>
+        <option selected>24</option><option>30</option>
+      </select>
+      <label>q <input id="q" type="range" min="10" max="95" value="70"
+        oninput="document.getElementById('qv').textContent=this.value"></label>
+      <span id="qv">70</span>
+      <button id="apply">apply to device</button>
+      <span id="applyMsg"></span>
     </div>
   </div>
   <div>
@@ -82,6 +102,18 @@ function applyFlip() {{
 document.getElementById('flipH').onclick = () => {{ fx ^= 1; localStorage.fx = fx; applyFlip(); }};
 document.getElementById('flipV').onclick = () => {{ fy ^= 1; localStorage.fy = fy; applyFlip(); }};
 applyFlip();
+document.getElementById('apply').onclick = async () => {{
+  const [w, h] = document.getElementById('res').value.split('x');
+  const fps = document.getElementById('fps').value;
+  const q = document.getElementById('q').value;
+  const msg = document.getElementById('applyMsg');
+  msg.textContent = '…';
+  try {{
+    const r = await (await fetch(`/control?w=${{w}}&h=${{h}}&fps=${{fps}}&quality=${{q}}`)).json();
+    msg.textContent = r.ok ? `pushed to ${{r.pushed.join(', ')}}` : 'no device connected';
+  }} catch (e) {{ msg.textContent = 'failed'; }}
+  setTimeout(() => {{ msg.textContent = ''; }}, 4000);
+}};
 async function poll() {{
   try {{
     const s = await (await fetch('/stats.json')).json();
@@ -155,6 +187,16 @@ class Dashboard:
             elif parsed.path == "/stream":
                 device = (parse_qs(parsed.query).get("device") or [None])[0]
                 await self._stream(writer, device)
+            elif parsed.path == "/frame.jpg":
+                device = (parse_qs(parsed.query).get("device") or [None])[0]
+                got = self._frame_for(device)
+                if got is None:
+                    self._respond(writer, "404 Not Found", "text/plain", b"no frame yet")
+                else:
+                    self._respond(writer, "200 OK", "image/jpeg", got[1].jpeg)
+            elif parsed.path == "/control":
+                body = await self._control(parse_qs(parsed.query))
+                self._respond(writer, "200 OK", "application/json", body)
             else:
                 self._respond(writer, "404 Not Found", "text/plain", b"not found")
             await writer.drain()
@@ -200,6 +242,30 @@ class Dashboard:
                     )
                     await writer.drain()
             await asyncio.sleep(1.0 / _STREAM_FPS)
+
+    async def _control(self, params: dict[str, list[str]]) -> bytes:
+        def num(key: str, default: int) -> int:
+            try:
+                return int(params.get(key, [default])[0])
+            except (TypeError, ValueError):
+                return default
+
+        device = (params.get("device") or [None])[0]
+        targets = [device] if device else list(self.link.devices)
+        video = {
+            "w": max(64, min(4096, num("w", 1280))),
+            "h": max(64, min(4096, num("h", 720))),
+            "fps": max(1, min(60, num("fps", 24))),
+            "quality": max(5, min(95, num("quality", 70))),
+        }
+        pushed = []
+        for target in targets:
+            try:
+                await self.link.push_config(target, video)
+                pushed.append(target)
+            except KeyError:
+                pass
+        return json.dumps({"ok": bool(pushed), "pushed": pushed, "video": video}).encode()
 
     def _frame_for(self, device: str | None):
         if device:
