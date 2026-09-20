@@ -190,11 +190,15 @@ class Dashboard:
         now = time.time()
         devices = []
         for device_id, session in self.link.devices.items():
-            prev_t, prev_n, prev_fps = self._fps.get(device_id, (now, session.frames_rx, 0.0))
-            fps = prev_fps
-            if now - prev_t >= 1.0:
-                fps = (session.frames_rx - prev_n) / (now - prev_t)
-                self._fps[device_id] = (now, session.frames_rx, fps)
+            entry = self._fps.get(device_id)
+            if entry is None:
+                self._fps[device_id] = (now, session.frames_rx, 0.0)  # seed the first sample
+                fps = 0.0
+            else:
+                prev_t, prev_n, fps = entry
+                if now - prev_t >= 1.0:
+                    fps = (session.frames_rx - prev_n) / (now - prev_t)
+                    self._fps[device_id] = (now, session.frames_rx, fps)
             lf = session.latest_frame
             devices.append(
                 {
