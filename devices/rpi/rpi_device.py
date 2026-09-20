@@ -37,17 +37,39 @@ class Camera:
     capable); falls back to software simplejpeg if the hw path fails (Pi 5 has
     no hw encoder; software tops out ~36 fps at VGA, ~15 fps at 720p)."""
 
-    def __init__(self) -> None:
+    def __init__(self, hflip: bool = False, vflip: bool = False) -> None:
         self._slot: bytes | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.dead = threading.Event()  # FATAL only (no camera / no libs) — never on restart
+        self.params: tuple[int, int, int, int] | None = None
+        self.hflip = hflip  # source-side flips for a physically rotated rig —
+        self.vflip = vflip  # these fix PERCEPTION too, not just the dashboard view
+
+    def _transform(self):
+        from libcamera import Transform
+
+        return Transform(hflip=int(self.hflip), vflip=int(self.vflip))
 
     def start(self, width: int, height: int, fps: int, quality: int) -> None:
+        self.params = (width, height, fps, quality)
+        self._stop = threading.Event()  # fresh event per run; threads capture their own
         self._thread = threading.Thread(
-            target=self._run, args=(width, height, fps, quality), daemon=True
+            target=self._run, args=(self._stop, width, height, fps, quality), daemon=True
         )
         self._thread.start()
+
+    def restart(self, width: int, height: int, fps: int, quality: int) -> None:
+        """Blocking (call via executor): tear down the current run, start anew.
+        No-op when params are unchanged (e.g. the hub re-pushes config on reconnect)."""
+        if self.params == (width, height, fps, quality):
+            return
+        old = self._thread
+        self._stop.set()
+        if old is not None:
+            old.join(timeout=8)
+        self.start(width, height, fps, quality)
 
     def stop(self) -> None:
         self._stop.set()
@@ -61,7 +83,7 @@ class Camera:
         with self._lock:
             self._slot = jpeg
 
-    def _run(self, width: int, height: int, fps: int, quality: int) -> None:
+    def _run(self, stop, width: int, height: int, fps: int, quality: int) -> None:
         try:
             from picamera2 import Picamera2
         except ImportError as e:
@@ -69,7 +91,8 @@ class Camera:
                 f"FATAL: {e}. Install with: sudo apt install python3-picamera2",
                 file=sys.stderr,
             )
-            self._stop.set()
+            stop.set()
+            self.dead.set()
             return
         try:
             picam2 = Picamera2()
@@ -79,12 +102,19 @@ class Camera:
                 "`rpicam-hello --list-cameras`.",
                 file=sys.stderr,
             )
-            self._stop.set()
+            stop.set()
+            self.dead.set()
             return
-        if not self._run_hardware(picam2, width, height, fps):
-            self._run_software(picam2, width, height, fps, quality)
+        try:
+            if not self._run_hardware(picam2, stop, width, height, fps, quality):
+                self._run_software(picam2, stop, width, height, fps, quality)
+        finally:
+            try:
+                picam2.close()  # release the camera so a restart() can re-acquire it
+            except Exception:
+                pass
 
-    def _run_hardware(self, picam2, width: int, height: int, fps: int) -> bool:
+    def _run_hardware(self, picam2, stop, width: int, height: int, fps: int, quality: int) -> bool:
         import io
 
         offer = self._offer
@@ -107,10 +137,12 @@ class Camera:
                 picam2.create_video_configuration(
                     main={"size": (width, height), "format": "YUV420"},
                     controls={"FrameRate": float(fps)},
+                    transform=self._transform(),
                 )
             )
-            # ~0.75 bits/pixel ≈ JPEG q70 look: 720p24 ≈ 17 Mbit/s, 1080p24 ≈ 37 Mbit/s.
-            bitrate = int(width * height * fps * 0.75)
+            # 0.75 bits/pixel ≈ JPEG q70 look; scale with the quality knob.
+            # 720p24@q70 ≈ 17 Mbit/s, 1080p24@q70 ≈ 37 Mbit/s.
+            bitrate = int(width * height * fps * 0.75 * (quality / 70))
             picam2.start_recording(MJPEGEncoder(bitrate=bitrate), FileOutput(SlotIO()))
         except Exception as e:
             print(f"[camera] hw MJPEG unavailable ({e}); software fallback", file=sys.stderr)
@@ -119,13 +151,13 @@ class Camera:
             except Exception:
                 pass
             return False
-        print(f"[camera] HW MJPEG {width}x{height}@{fps} ~{bitrate / 1e6:.0f} Mbit/s")
-        while not self._stop.is_set():
+        print(f"[camera] HW MJPEG {width}x{height}@{fps} q{quality} ~{bitrate / 1e6:.0f} Mbit/s")
+        while not stop.is_set():
             time.sleep(0.2)
         picam2.stop_recording()
         return True
 
-    def _run_software(self, picam2, width: int, height: int, fps: int, quality: int) -> None:
+    def _run_software(self, picam2, stop, width: int, height: int, fps: int, quality: int) -> None:
         try:
             import simplejpeg
 
@@ -133,15 +165,17 @@ class Camera:
                 picam2.create_video_configuration(
                     main={"size": (width, height), "format": "RGB888"},
                     controls={"FrameRate": float(fps)},
+                    transform=self._transform(),
                 )
             )
             picam2.start()
         except Exception as e:
             print(f"FATAL: software camera path failed ({e})", file=sys.stderr)
-            self._stop.set()
+            stop.set()
+            self.dead.set()
             return
         print(f"[camera] SW simplejpeg {width}x{height} q{quality}")
-        while not self._stop.is_set():
+        while not stop.is_set():
             try:
                 # picamera2 quirk: "RGB888" arrays are BGR channel order.
                 array = picam2.capture_array("main")
@@ -169,6 +203,7 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
         )
     )
     got_config = asyncio.Event()
+    config_dirty = asyncio.Event()
 
     async def receiver() -> None:
         async for message in ws:
@@ -178,6 +213,7 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
             if msg.get("type") == "config":
                 video_cfg.update(msg.get("video", {}))
                 got_config.set()
+                config_dirty.set()  # runtime pushes (dashboard) reconfigure the camera
             elif msg.get("type") == "card":
                 print(f"[display] {msg['template']}: {msg['title']} — {msg['body']}")
             elif msg.get("type") == "ping":
@@ -200,9 +236,21 @@ async def session(ws, camera: Camera, video_cfg: dict, device_id: str) -> None:
         seq = 0
         sent = 0
         t_report = time.monotonic()
-        interval = 1.0 / max(1, int(video_cfg["fps"]))
         next_send = time.monotonic()
+        loop = asyncio.get_running_loop()
         while True:
+            if config_dirty.is_set():
+                config_dirty.clear()
+                # restart() joins the camera thread — keep it off the event loop.
+                await loop.run_in_executor(
+                    None,
+                    camera.restart,
+                    int(video_cfg["w"]),
+                    int(video_cfg["h"]),
+                    int(video_cfg["fps"]),
+                    int(video_cfg["quality"]),
+                )
+            interval = 1.0 / max(1, int(video_cfg["fps"]))  # fps is dynamic now
             jpeg = camera.latest()
             if jpeg is not None:
                 seq = (seq + 1) & 0xFFFF
@@ -230,10 +278,14 @@ async def main() -> None:
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--fps", type=int, default=24)
     ap.add_argument("--quality", type=int, default=70)
+    ap.add_argument("--hflip", action="store_true", help="mirror at the source (fixes perception)")
+    ap.add_argument(
+        "--vflip", action="store_true", help="flip at the source (rig mounted upside down)"
+    )
     args = ap.parse_args()
 
     video_cfg = {"w": args.width, "h": args.height, "fps": args.fps, "quality": args.quality}
-    camera = Camera()
+    camera = Camera(hflip=args.hflip, vflip=args.vflip)
     backoff = 0.5
     try:
         while True:
@@ -246,8 +298,8 @@ async def main() -> None:
                 print(f"[rpi] hub connection lost ({e!r}); retry in {backoff:.1f}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 5.0)
-            if camera._stop.is_set():
-                raise SystemExit(1)  # camera is dead; no point reconnecting
+            if camera.dead.is_set():
+                raise SystemExit(1)  # camera is FATALLY dead; no point reconnecting
     finally:
         camera.stop()
 
