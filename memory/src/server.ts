@@ -11,7 +11,7 @@ import type { AgentBridge } from './agent-bridge.js';
 import { BrowseQuery } from './browse.js';
 
 interface ServerOptions {
-  perceptionUrl: string; publicDir: string; provider: string; model: string; writerModel?: string;
+  perceptionUrl: string; publicDir: string; provider: string; model: string; writerModel?: string; writerProvider?: string;
   updateFormat?: string; textReader?: string;
   speechBackend?: 'local' | 'baseten'; speechNotice?: string;
   bridge?: AgentBridge;
@@ -52,6 +52,7 @@ export function createMemoryServer(pipeline: MemoryPipeline, options: ServerOpti
   app.get('/api/config', (_req, res) => res.json({ captureIntervalMs: 5000,
     transcriptWords: pipeline.transcriptWords, perceptionUrl: options.perceptionUrl,
     provider: options.provider, model: options.model, writerModel: options.writerModel ?? options.model,
+    writerProvider: options.writerProvider ?? options.provider,
     updateFormat: options.updateFormat, textReader: options.textReader,
     speechBackend: options.speechBackend ?? 'baseten', speechNotice: options.speechNotice }));
   peopleRoutes(app, pipeline, upstream);

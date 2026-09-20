@@ -100,7 +100,7 @@ test('HTTP accepts evidence, commits and retrieves durable source-linked semanti
       entities: [], facts: [], events: [] }),
   }, { model: 'test', dimensions: 3, embed: async texts => texts.map(() => [1,0,0]) }, { dataDir: dir });
   const server = createMemoryServer(pipeline, { perceptionUrl: 'http://127.0.0.1:1', publicDir: dir,
-    provider: 'test', model: 'test-vision', writerModel: 'test-writer' });
+    provider: 'test', model: 'test-vision', writerModel: 'test-writer', writerProvider: 'responses' });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const post = (path: string, body: unknown, headers = {}) => fetch(base + path, { method: 'POST',
@@ -109,6 +109,7 @@ test('HTTP accepts evidence, commits and retrieves durable source-linked semanti
     assert.equal(calls, 0);
     const config = await (await fetch(base + '/api/config')).json();
     assert.equal(config.model, 'test-vision'); assert.equal(config.writerModel, 'test-writer');
+    assert.equal(config.provider, 'test'); assert.equal(config.writerProvider, 'responses');
     assert.equal((await post('/api/sessions', {}, { Origin:'http://other-site.invalid' })).status, 403);
     const session = await (await post('/api/sessions', {})).json();
     const capturedAt = Date.now();

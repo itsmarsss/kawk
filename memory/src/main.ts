@@ -9,6 +9,7 @@ import { MemoryPipeline } from './pipeline.js';
 import { createMemoryServer } from './server.js';
 import { createNativeTextRecognizer } from './text-recognition.js';
 import { AgentBridge } from './agent-bridge.js';
+import { resolveVisionModel } from './vision-provider.js';
 
 const moduleParent = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packageRoot = existsSync(join(moduleParent, 'package.json')) ? moduleParent : resolve(moduleParent, '..');
@@ -21,6 +22,7 @@ if (provider !== 'codex' && provider !== 'responses') throw new Error('Unsupport
 const model = process.env.MEMORY_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-5.6-terra';
 if (!model?.trim()) throw new Error('Configure MEMORY_MODEL or OPENAI_MODEL for the Responses provider');
 const writerModel = process.env.MEMORY_WRITER_MODEL ?? model;
+const vision = resolveVisionModel({ provider, model }, process.env);
 const speechBackend = process.env.MEMORY_SPEECH_BACKEND ?? 'local';
 if (speechBackend !== 'local' && speechBackend !== 'baseten') throw new Error('Unsupported MEMORY_SPEECH_BACKEND');
 if (!writerModel.trim()) throw new Error('Configure a nonempty MEMORY_WRITER_MODEL');
@@ -45,13 +47,14 @@ const bridge = process.env.KAWK_AGENT_TOKEN_FILE ? new AgentBridge(store, {
 }) : undefined;
 const serverOptions: Parameters<typeof createMemoryServer>[1] = {
   perceptionUrl: process.env.MEMORY_PERCEPTION_URL ?? 'http://127.0.0.1:8081',
-  publicDir: join(packageRoot, 'public'), provider, model, writerModel, updateFormat, textReader,
+  publicDir: join(packageRoot, 'public'), provider: vision.provider, model: vision.model,
+  writerProvider: provider, writerModel, updateFormat, textReader,
   speechBackend, speechNotice: process.env.MEMORY_SPEECH_NOTICE, bridge,
 };
 const server = createMemoryServer(pipeline, serverOptions);
 const port = Number(process.env.PORT ?? 8082);
 server.listen(port, process.env.HOST ?? '0.0.0.0', () => {
-  console.log(`KAWK memory: http://localhost:${port} (${provider}, vision ${model}, writer ${writerModel})`);
+  console.log(`KAWK memory: http://localhost:${port} (vision ${vision.provider}/${vision.model}, writer ${provider}/${writerModel})`);
 });
 const certFile = process.env.MEMORY_TLS_CERT, keyFile = process.env.MEMORY_TLS_KEY;
 if (Boolean(certFile) !== Boolean(keyFile)) throw new Error('Set both MEMORY_TLS_CERT and MEMORY_TLS_KEY');

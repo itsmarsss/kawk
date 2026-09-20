@@ -15,6 +15,8 @@ import { type TextEvidence, type TextRecognizer } from './text-recognition.js';
 import { NestedVisionModelSchema, VisualDraftError, decodeNestedVisionModel } from './visual-draft.js';
 import { bindingModelSchema, BindingError, bindingUpdatePrompt, decodeBindingBatch } from './visual-binding.js';
 import { DETAILED_IMAGE_PROMPT, SIMPLE_MEMORY_PROMPT, SimpleMemoryDeltaSchema, SimpleMemoryBatchSchema } from './simple-memory.js';
+import { resolveVisionModel, basetenVisionConfig, basetenVisionBody, decodeBasetenVision, BasetenVisionError,
+  type VisionProvider } from './vision-provider.js';
 
 const INSTRUCTIONS = `You are a factual memory interpreter, not a coding assistant. Use no tools,
 commands, browsing, filesystem inspection or external information. Work only from the supplied
@@ -176,7 +178,7 @@ Keep entity descriptions, state and events specific to the evidence available at
 Per-packet rules:\n`;
 
 export interface ModelTiming {
-  operation: 'observe' | 'update' | 'updateBatch'; provider: 'codex' | 'responses'; model: string;
+  operation: 'observe' | 'update' | 'updateBatch'; provider: VisionProvider; model: string;
   attempt: number;
   updateFormat?: 'simple' | 'canonical' | 'source' | 'binding';
   durationMs: number; startupMs: number | null; modelMs: number | null;
@@ -195,6 +197,7 @@ export type CodexRunner = (request: CodexRunRequest) => Promise<CodexRunResult>;
 export interface InterpreterOptions {
   provider?: 'codex' | 'responses'; model?: string; codexPath?: string;
   writerModel?: string;
+  visionProvider?: VisionProvider; visionModel?: string;
   updateFormat?: 'simple' | 'canonical' | 'source' | 'binding';
   timeoutMs?: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv;
   maxAttempts?: number; retryDelayMs?: number;
@@ -520,12 +523,17 @@ export function createInterpreter(options: InterpreterOptions = {}): Interpreter
   if (!model?.trim()) throw new Error('Configure OPENAI_MODEL for the Responses provider');
   const writerModel = options.writerModel ?? env.MEMORY_WRITER_MODEL ?? model;
   if (!writerModel.trim()) throw new Error('Configure a nonempty memory writer model');
+  const vision = resolveVisionModel({ provider, model, visionProvider: options.visionProvider,
+    visionModel: options.visionModel }, env);
+  // Credentials alone never select or contact Baseten. Validate only on explicit selection.
+  const baseten = vision.provider === 'baseten' ? basetenVisionConfig(env) : undefined;
   const timeoutMs = options.timeoutMs ?? 90_000, maxOutputBytes = options.maxOutputBytes ?? 1_048_576;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000 ||
       !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 128 || maxOutputBytes > 8_388_608)
     throw new Error('Invalid interpreter limits');
-  const apiKey = provider === 'responses' ? env.OPENAI_API_KEY : undefined;
-  if (provider === 'responses' && !apiKey?.trim()) throw new Error('Responses provider needs configured OPENAI_API_KEY');
+  const apiKey = provider === 'responses' || vision.provider === 'responses' ? env.OPENAI_API_KEY : undefined;
+  if ((provider === 'responses' || vision.provider === 'responses') && !apiKey?.trim())
+    throw new Error('Responses provider needs configured OPENAI_API_KEY');
   const updateFormat = options.updateFormat ?? 'canonical';
   if (!['simple', 'canonical', 'source', 'binding'].includes(updateFormat)) throw new Error('Unsupported memory update format');
   if (updateFormat === 'simple' && options.textRecognizer) throw new Error('Simple image notes use the vision model directly; disable auxiliary OCR');
@@ -537,14 +545,26 @@ export function createInterpreter(options: InterpreterOptions = {}): Interpreter
   async function invokeOnce<T, Result = T>(attempt: number, operation: ModelTiming['operation'], prompt: string, schema: z.ZodType<T>,
     image?: Buffer, validate?: (value: T) => Result): Promise<Result> {
     const started = performance.now();
-    const selectedModel = operation === 'observe' ? model! : writerModel;
-    const timing: ModelTiming = { attempt, operation, provider: provider as 'codex' | 'responses', model: selectedModel,
+    const selectedModel = operation === 'observe' ? vision.model : writerModel;
+    const selectedProvider = operation === 'observe' ? vision.provider : provider as 'codex' | 'responses';
+    const timing: ModelTiming = { attempt, operation, provider: selectedProvider, model: selectedModel,
       ...(operation === 'observe' && !['binding', 'simple'].includes(updateFormat) ? {} : { updateFormat }),
       durationMs: 0, startupMs: null, modelMs: null, usage: {}, success: false };
     try {
       const jsonSchema = z.toJSONSchema(schema);
       let value: unknown;
-      if (provider === 'codex') {
+      if (selectedProvider === 'baseten') {
+        if (!baseten || !image) fail('missing_vision_input');
+        const response = await (options.fetch ?? globalThis.fetch)(baseten.url, {
+          method: 'POST', signal: AbortSignal.timeout(timeoutMs), redirect: 'error',
+          headers: { Authorization: `Api-Key ${baseten.apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(basetenVisionBody({ model: selectedModel, instructions: INSTRUCTIONS,
+            prompt, image, schema: jsonSchema, maxTokens: baseten.maxTokens })),
+        });
+        if (!response.ok) { await response.body?.cancel(); fail(`http_${response.status}`); }
+        const parsed = decodeBasetenVision(record(await boundedResponse(response, maxOutputBytes)));
+        value = parsed.value; timing.usage = tokenUsage(parsed.usage);
+      } else if (selectedProvider === 'codex') {
         const folder = await mkdtemp(join(tmpdir(), 'kawk-interpreter-'));
         try {
           const cwd = join(folder, 'empty'); await mkdir(cwd);
@@ -614,7 +634,7 @@ export function createInterpreter(options: InterpreterOptions = {}): Interpreter
       timing.success = true;
       return validated as Result;
     } catch (error) {
-      const code = error instanceof InterpreterError || error instanceof SourceWireError ||
+      const code = error instanceof InterpreterError || error instanceof BasetenVisionError || error instanceof SourceWireError ||
         error instanceof VisualDraftError || error instanceof BindingError ? error.code :
         error instanceof Error && /abort|timeout/i.test(error.name) ? 'timeout' : 'provider_failure';
       timing.errorCode = code;

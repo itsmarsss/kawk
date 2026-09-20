@@ -36,10 +36,14 @@ shell; the server does not silently load arbitrary environment files. The option
 `codex` provider remains available for R&D through the signed-in CLI. ChatGPT/Codex
 sign-in does not supply an OpenAI API key.
 
-`MEMORY_MODEL` chooses image interpretation. Optional `MEMORY_WRITER_MODEL` chooses
+`MEMORY_MODEL` chooses the base model. Optional `MEMORY_WRITER_MODEL` chooses
 the text-only memory updater; unset, both use the same model. The default remains
-Terra for both. Splitting them is an R&D comparison, not an established speedup;
-the configured model is included in each operation's latency log and `/api/config`.
+Terra for both. Optional `MEMORY_VISION_PROVIDER` and `MEMORY_VISION_MODEL` override
+only image interpretation. A Baseten Qwen adapter is available but **disabled by
+default**; see [configuration and verification](../docs/BASETEN_VISION.md).
+Splitting providers is an R&D comparison, not an established speedup. Each operation
+logs its actual provider/model; `/api/config` reports the selected vision
+`provider`/`model` separately from `writerProvider`/`writerModel`.
 
 The server allows one recovery attempt for transient provider errors or invalid
 model output (`MEMORY_MODEL_ATTEMPTS=2`; choose `1` for single-attempt experiments).
